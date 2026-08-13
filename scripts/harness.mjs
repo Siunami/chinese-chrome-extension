@@ -108,7 +108,6 @@ const handlers = {
   }),
   // saveWord/unsaveWord/savedStates are answered in the page instead: they
   // operate on the word list, which lives in the shim's fake storage.
-  pinyinChars: () => ({ chars: [] }),
   listVoices: () => ({ voices: [] }),
   getEnabled: () => ({ enabled: true }),
   syncNow: () => ({ ok: true }),

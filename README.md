@@ -131,14 +131,6 @@ headless Chrome, so they cannot quietly stop being true.)*
   (default 15 and 60); the limits are per *day*, so reloading the page no
   longer hands you another batch, and the Review tab's badge now counts what a
   session would actually serve.
-- **Pronunciation check on a review card** — hit **🎙 Check pronunciation** on
-  any card and say it aloud. Grading is by *pinyin*, not hanzi, because Chinese
-  is full of homophones: a recognizer that transcribes 事 when you correctly
-  said 是 (both shì) still counts as right, and tone is graded separately so a
-  right sound with the wrong tone reads differently from a plain miss
-  (`extension/lib/pronounce.js`, pure and unit-tested). It is **practice only**
-  and never touches your review schedule. Runs entirely in Chrome's built-in
-  speech recognition — no server, no API key, no cost.
 - **Save anything you can point at** — a card does not have to be a word the
   popup looked up. Highlight any Chinese on any page — a phrase in an article,
   a clause you half-understood, one sentence of a study guide — and a small bar
@@ -318,13 +310,12 @@ deploy`, and the app will tell you if you forget.
 | Feature | Needs a key | Needs the Worker |
 | --- | --- | --- |
 | Hover popup, dictionary, example sentences, HSK guides | no | no |
-| Saving words, flashcards, SRS review, pronunciation check | no | no |
+| Saving words, flashcards, SRS review | no | no |
 | Phone sync (the PWA) | no | yes |
 | News digest, tutor, sentence translation | **yes, yours** | yes |
 
-There is no paid speech service anywhere in this: the review card's
-pronunciation check uses Chrome's own `SpeechRecognition`, and reading words
-aloud uses `chrome.tts`. Both are free and run on your machine.
+There is no paid speech service anywhere in this: reading words aloud uses
+`chrome.tts`, which is free and runs on your machine.
 
 ## Phone sync (flashcards on your phone)
 
@@ -955,7 +946,6 @@ extension/          the unpacked extension (load this folder in Chrome)
   wordlist.html/js  saved library: cards, dates, counts, each card's place on
                     the curve, stage filters + TSV export
   review.html/js    spaced-repetition flashcard review + end-of-session panel
-  lib/pronounce.js  pinyin-based grading for the review card check (pure; tested)
 worker/             Cloudflare Worker: /api/sync, /api/news,
                     /api/news/categories, /api/ask, /api/placement,
                     /api/translate + serves the PWA (D1-backed)

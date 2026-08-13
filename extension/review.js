@@ -8,7 +8,6 @@ import {
 } from './lib/srs.js';
 import { cardKey } from './lib/merge.js';
 import { forecastChart, stageBar } from './lib/progress.js';
-import { gradePronunciation } from './lib/pronounce.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
@@ -28,8 +27,6 @@ let current = null;
 let revealed = false;
 let grading = false; // synchronous guard: a grade is being persisted
 let sessionAgain = []; // 'again' cards come back at the end of the session
-let activeRecognition = null; // in-flight SpeechRecognition, if any
-let pronounceSeq = 0; // invalidates recognition results after the card changes
 
 // Which script to lead with, read at init and kept live by the navbar toggle.
 let hanziPref = 'simp-first';
@@ -169,142 +166,6 @@ function speakButton(text) {
     chrome.runtime.sendMessage({ type: 'speak', text, slow: event.shiftKey });
   });
   return button;
-}
-
-// ---------------------------------------------------------------------------
-// Pronunciation self-test: speak the card aloud, get each syllable graded
-// green/amber/red. Purely adjacent — it never touches SRS scheduling.
-// ---------------------------------------------------------------------------
-
-function speechRecognitionCtor() {
-  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
-}
-
-function stopPronounce() {
-  pronounceSeq++;
-  if (activeRecognition) {
-    try { activeRecognition.abort(); } catch { /* already stopped */ }
-    activeRecognition = null;
-  }
-}
-
-const RECOGNITION_ERRORS = {
-  'not-allowed': 'Microphone blocked. Allow mic access for this page and retry.',
-  'service-not-allowed': 'Microphone blocked. Allow mic access for this page and retry.',
-  'no-speech': "Didn't hear anything — tap and speak the word aloud.",
-  audio: 'No microphone was found.',
-  network: 'Speech recognition needs a network connection.',
-};
-
-const STATUS_LABEL = {
-  good: 'Sound and tone matched',
-  tone: 'Right sound, wrong tone',
-  miss: "Wasn't heard",
-};
-
-async function pinyinCharsFor(text) {
-  const r = await chrome.runtime.sendMessage({ type: 'pinyinChars', text })
-    .catch(() => null);
-  return (r && r.chars) || [];
-}
-
-function renderPronResult(resultEl, expectedChars, heardChars, transcript) {
-  const { indexStatus, summary } = gradePronunciation(expectedChars, heardChars);
-  resultEl.replaceChildren();
-
-  const hanzi = el('div', 'pron-hanzi');
-  expectedChars.forEach((item, i) => {
-    const status = indexStatus.get(i);
-    const span = el('span', status ? `pron-char pron-${status}` : 'pron-char', item.char);
-    if (status) span.title = STATUS_LABEL[status];
-    hanzi.append(span);
-  });
-  resultEl.append(hanzi);
-
-  const parts = [`${summary.good}/${summary.total} matched`];
-  if (summary.tone) parts.push(`${summary.tone} tone slip${summary.tone === 1 ? '' : 's'}`);
-  if (summary.miss) parts.push(`${summary.miss} missed`);
-  resultEl.append(el('div', 'pron-summary', parts.join(' · ')));
-  resultEl.append(el('div', 'pron-heard', `Heard: ${transcript ? `“${transcript}”` : '—'}`));
-}
-
-function pronounceSection(word) {
-  const section = el('div', 'pron');
-  const Ctor = speechRecognitionCtor();
-
-  const bar = el('div', 'pron-bar');
-  const button = el('button', 'pron-btn', '🎙 Check pronunciation');
-  bar.append(button, el('span', 'pron-note', 'practice only · doesn’t affect scheduling'));
-  const status = el('div', 'pron-status');
-  const result = el('div', 'pron-result');
-  section.append(bar, status, result);
-
-  if (!Ctor) {
-    button.disabled = true;
-    status.textContent = "This browser can't record speech for the pronunciation check.";
-    return section;
-  }
-
-  let expectedChars = null; // fetched lazily on first use, then reused
-
-  button.addEventListener('click', async () => {
-    stopPronounce();
-    const seq = pronounceSeq;
-    result.replaceChildren();
-    button.disabled = true;
-    status.textContent = 'Loading…';
-
-    if (!expectedChars) expectedChars = await pinyinCharsFor(word.simp);
-    if (seq !== pronounceSeq) return; // card changed while loading
-    if (!expectedChars.length) {
-      status.textContent = 'No pinyin available to grade this card.';
-      button.disabled = false;
-      return;
-    }
-
-    const rec = new Ctor();
-    rec.lang = 'zh-CN';
-    rec.interimResults = false;
-    rec.maxAlternatives = 1;
-    rec.continuous = false;
-    activeRecognition = rec;
-    let got = false;
-
-    status.textContent = '🎤 Listening… say it aloud';
-    button.textContent = 'Listening…';
-
-    rec.onresult = async (event) => {
-      got = true;
-      const transcript = String(event.results?.[0]?.[0]?.transcript || '').trim();
-      const heard = transcript ? await pinyinCharsFor(transcript) : [];
-      if (seq !== pronounceSeq) return; // card advanced before results returned
-      status.textContent = '';
-      renderPronResult(result, expectedChars, heard, transcript);
-    };
-    rec.onerror = (event) => {
-      if (seq !== pronounceSeq) return;
-      got = true;
-      status.textContent = RECOGNITION_ERRORS[event.error] || 'Could not recognize speech.';
-    };
-    rec.onend = () => {
-      if (activeRecognition === rec) activeRecognition = null;
-      if (seq !== pronounceSeq) return;
-      button.disabled = false;
-      button.textContent = '🎙 Try again';
-      if (!got && !status.textContent) status.textContent = "Didn't catch that — try again.";
-    };
-
-    try {
-      rec.start();
-    } catch {
-      status.textContent = 'Could not start the microphone.';
-      button.disabled = false;
-      button.textContent = '🎙 Check pronunciation';
-      activeRecognition = null;
-    }
-  });
-
-  return section;
 }
 
 // A session progress bar plus the two numbers that actually change during a
@@ -526,7 +387,6 @@ async function renderCard() {
   // Asking about the card before answering it would just be a way to be told
   // the answer, so the tutor is not offered until reveal().
   tutor.setAvailable(false);
-  stopPronounce();
   appEl.replaceChildren();
   keyhintEl.hidden = false;
   if (!current) {
@@ -587,7 +447,6 @@ async function reveal() {
     controls.append(btn);
   }
   card.append(controls);
-  card.append(pronounceSection(current));
 
   // The answer is on screen: questions about this card can no longer give it
   // away. Each card keeps its own conversation.

@@ -2,8 +2,7 @@
 
 import {
   parseDictTSV, buildIndex, buildRelatedIndex, findRelated, lookupAt,
-  charBreakdown, rankEntryIndices, parsePinyin, findExamples, charReadings,
-  sentencePinyin,
+  charBreakdown, rankEntryIndices, parsePinyin, findExamples, sentencePinyin,
 } from './lib/cedict.js';
 import {
   pickMandarinVoice, sortedMandarinVoices, voiceId,
@@ -445,15 +444,6 @@ async function handleListVoices() {
   };
 }
 
-// Per-character pinyin for the review page's pronunciation self-test, so it
-// can compare the expected reading against what the recognizer heard.
-async function handlePinyinChars(msg) {
-  const text = String(msg.text || '').slice(0, 200);
-  if (!text) return { chars: [] };
-  const { entries, index } = await ensureData();
-  return { chars: charReadings(index, entries, text) };
-}
-
 // Pinyin for a batch of Chinese strings, annotated the same way the bundled
 // example corpus is. The HSK guides store no readings of their own — they ask
 // for them here — so the guide text and the hover popup can never disagree.
@@ -503,7 +493,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     resolveCards: handleResolveCards,
     examples: handleExamples,
     speak: handleSpeak,
-    pinyinChars: handlePinyinChars,
     pinyinBatch: handlePinyinBatch,
     convertScript: handleConvertScript,
     listVoices: handleListVoices,
