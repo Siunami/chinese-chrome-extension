@@ -9,6 +9,7 @@ import { tombstoneFor } from './lib/merge.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
+import { forms, getHanziPref, onHanziPref, secondaryLabel } from './lib/hanzi.js';
 
 const { createSelectionBar } = globalThis.ZhongwenSaveCard;
 
@@ -55,6 +56,8 @@ let allWords = [];
 let stageFilter = 'all';
 let sortBy = 'saved';
 let limits = { ...DEFAULT_LIMITS };
+// Which script the table leads with; kept live by the navbar toggle.
+let hanziPref = 'simp-first';
 
 const SORTS = {
   saved: { label: 'Recently saved', compare: (a, b) => savedAt(b) - savedAt(a) },
@@ -241,7 +244,10 @@ function render(words) {
   const hrow = document.createElement('tr');
   // The look-up count used to be its own column headed "×", which read as a
   // delete column and was empty for most rows. It belongs with the date.
-  for (const h of ['Card', 'Trad.', 'Pinyin', 'Definition', 'Saved', 'Progress', 'Next', '']) {
+  // The second column is whichever script the learner is NOT reading in, so
+  // its heading follows the toggle.
+  for (const h of ['Card', secondaryLabel(hanziPref), 'Pinyin', 'Definition',
+    'Saved', 'Progress', 'Next', '']) {
     const th = document.createElement('th');
     th.textContent = h;
     hrow.append(th);
@@ -256,9 +262,10 @@ function render(words) {
     const status = srsStatus(w, now);
     const stClass =
       status === 'new' ? 'st-new' : status.startsWith('due') ? 'st-due' : 'st-later';
+    const face = forms(w, hanziPref);
     const cells = [
-      ['hanzi', w.simp],
-      ['hanzi', w.trad !== w.simp ? w.trad : ''],
+      ['hanzi', face.primary],
+      ['hanzi', face.secondary || ''],
       ['pinyin', w.pinyin],
       ['', w.defs],
       ['meta', fmtDate(savedAt(w))],
@@ -282,10 +289,12 @@ function render(words) {
         speak.className = 'speak';
         speak.textContent = '🔊';
         speak.title = 'Play Mandarin pronunciation (Shift-click: extra slow)';
-        speak.setAttribute('aria-label', `Play pronunciation for ${w.simp}`);
+        speak.setAttribute('aria-label', `Play pronunciation for ${face.primary}`);
         speak.addEventListener('click', (event) => {
           event.stopPropagation();
-          chrome.runtime.sendMessage({ type: 'speak', text: w.simp, slow: event.shiftKey });
+          chrome.runtime.sendMessage({
+            type: 'speak', text: face.primary, slow: event.shiftKey,
+          });
         });
         wrap.append(speak);
         td.append(wrap);
@@ -372,8 +381,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.wordlist) render(changes.wordlist.newValue || []);
 });
 
+// The whole table is headwords, so a flip repaints all of it — including the
+// second column's heading, which names the script you are not reading in.
+onHanziPref((pref) => {
+  hanziPref = pref;
+  render(allWords);
+});
+
 async function init() {
-  limits = await chrome.storage.sync.get(DEFAULT_LIMITS).catch(() => DEFAULT_LIMITS);
+  [limits, hanziPref] = await Promise.all([
+    chrome.storage.sync.get(DEFAULT_LIMITS).catch(() => DEFAULT_LIMITS),
+    getHanziPref(),
+  ]);
   render(await getWords());
 }
 

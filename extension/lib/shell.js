@@ -12,6 +12,9 @@
 // so the two cannot drift apart again.
 
 import { DEFAULT_LIMITS, reviewBadgeCount } from './srs.js';
+import {
+  SIMP_FIRST, TRAD_FIRST, getHanziPref, setHanziPref, onHanziPref,
+} from './hanzi.js';
 
 // id -> { label, href, count }. `count` names the badge this tab carries.
 export const VIEWS = [
@@ -87,6 +90,36 @@ export function mountShell({ active, onSelect } = {}) {
     return tab;
   });
 
+  // Which script to study in is a thing you flip while reading, not a thing
+  // you go to Settings for — a traditional reader had to dig a dropdown out of
+  // the options page, and it only ever moved the popup anyway.
+  const script = el('div', 'zx-script');
+  script.setAttribute('role', 'group');
+  script.setAttribute('aria-label', 'Character script');
+  const scriptButtons = [
+    [SIMP_FIRST, '简', 'Show simplified first'],
+    [TRAD_FIRST, '繁', 'Show traditional first'],
+  ].map(([value, glyph, label]) => {
+    const btn = el('button', 'zx-script-btn', glyph);
+    btn.type = 'button';
+    btn.dataset.pref = value;
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.addEventListener('click', () => setHanziPref(value));
+    script.append(btn);
+    return btn;
+  });
+  function paintScript(pref) {
+    for (const btn of scriptButtons) {
+      const on = btn.dataset.pref === pref;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', String(on));
+    }
+  }
+  getHanziPref().then(paintScript);
+  // Every page carries the toggle, so a flip on one has to show on the others.
+  onHanziPref(paintScript);
+
   // Settings is deliberately not a tab: it is a place you visit and come back
   // from, not one of the things you study.
   const settings = el(onSelect ? 'button' : 'a', 'zx-settings', 'Options');
@@ -98,7 +131,7 @@ export function mountShell({ active, onSelect } = {}) {
     settings.href = 'options.html';
   }
 
-  header.append(brand, nav, el('div', 'zx-spacer'), settings);
+  header.append(brand, nav, el('div', 'zx-spacer'), script, settings);
   document.body.prepend(header);
 
   function setActive(id) {

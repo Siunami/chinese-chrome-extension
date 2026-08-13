@@ -50,8 +50,17 @@ does well that popup dictionaries usually don't: **real example sentences**
   Speaker buttons play words, related terms, full sentences, saved-library
   entries, and review cards. Press `p` for the current popup word; use
   Shift-click (or Shift+`p`) for extra-slow playback.
-- **Traditional + simplified** — both forms indexed and shown; pick which
-  displays first in options.
+- **Traditional or simplified, one click** — a **简 / 繁** toggle sits in the
+  navbar on every page. It picks which script leads in the hover popup, on your
+  review cards, and in the saved library, live: flipping it repaints the card
+  you are looking at rather than waiting for the next one. Both forms are
+  always indexed and both stay on screen — the one you did not choose moves to
+  the secondary line (and the library's second column renames itself to match),
+  so a card still teaches both. This is a display choice, never a conversion:
+  nothing rewrites text, so prose that exists only in one script — a study
+  guide, a generated news passage — is left as written. It was previously a
+  dropdown buried in Options that only the popup honoured, which meant a
+  traditional reader was studying the simplified form of their own cards.
 - **Save words** — click the sticky **☆ save** button at the top of the popup
   or press `s` (`c` copies, `Esc` closes). Every save control is a toggle: a
   word already in your vocab list shows **✓ saved** instead of offering to

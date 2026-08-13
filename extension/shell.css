@@ -75,7 +75,13 @@ body.embedded .zx-header { display: none; }
   display: block; color: #888; font-size: 10px; letter-spacing: 0.04em;
 }
 
-.zx-header .nav { display: flex; align-items: center; gap: 6px; }
+/* min-width lets the tabs shrink instead of pushing the header wider than the
+   window; the toggle and Options on the right must stay reachable. */
+.zx-header .nav {
+  display: flex; align-items: center; gap: 6px;
+  min-width: 0; overflow-x: auto; scrollbar-width: none;
+}
+.zx-header .nav::-webkit-scrollbar { display: none; }
 
 /* One tab style for both elements it is built from. */
 .tab {
@@ -101,6 +107,25 @@ body.embedded .zx-header { display: none; }
 
 .zx-spacer { flex: 1; }
 
+/* Simplified / traditional. A segmented pair rather than a single button that
+   flips: which script you are in should be readable at a glance, not inferred
+   from what the button offers to switch you to. */
+.zx-script {
+  display: flex; gap: 2px; padding: 2px; margin-right: 4px;
+  border: 1px solid var(--zx-line); border-radius: 9px; background: #f6f2e7;
+}
+.zx-script-btn {
+  padding: 3px 9px; border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: #8a8272; font-size: 14px; line-height: 1.3;
+  font-family: var(--zx-hanzi); cursor: pointer;
+}
+.zx-script-btn:hover { color: var(--zx-red); }
+.zx-script-btn.active {
+  border-color: #d8cab5; background: var(--zx-surface); color: var(--zx-red-deep);
+  font-weight: 700;
+}
+.zx-script-btn:focus-visible { outline: 2px solid var(--zx-red); outline-offset: 1px; }
+
 .zx-settings {
   padding: 6px 10px; border: 1px solid transparent; border-radius: 8px;
   background: none; color: var(--zx-muted); font: inherit; font-size: 12px;
@@ -111,10 +136,13 @@ body.embedded .zx-header { display: none; }
   border-color: #d8cab5; background: var(--zx-highlight); color: var(--zx-red-deep);
 }
 
-@media (max-width: 620px) {
+/* The wordmark is the first thing to go: the 中 mark still identifies the app,
+   and the tabs, the script toggle and Options all have to fit. */
+@media (max-width: 860px) {
   .zx-header { padding: 9px 12px; gap: 8px; }
   .zx-brand-text { display: none; }
   .tab { padding: 7px 9px; }
+  .zx-script-btn { padding: 3px 7px; }
 }
 
 /* --- page frame ---------------------------------------------------------- */
