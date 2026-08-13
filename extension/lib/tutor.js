@@ -16,9 +16,9 @@ import { DEFAULT_SERVER_URL, aiHeaders, getSyncMeta, newToken } from './sync.js'
 
 const HIGHLIGHT_NAME = 'tutor-quote';
 const QUOTE_LIMIT = 1200;   // matches the Worker's selection cap
-const MAX_HISTORY = 12;     // turns kept per thread, on disk and on the wire
+const MAX_HISTORY = 12;     // turns kept per thread, in memory and on the wire
 const MAX_THREADS = 30;     // conversations retained before the oldest is dropped
-const STORE_KEY = 'tutorChats';
+const LEGACY_STORE_KEY = 'tutorChats'; // see the cleanup below
 
 const TUTOR_CSS = `
   .tutor {
@@ -141,24 +141,35 @@ function el(tag, className, text) {
   return node;
 }
 
-// Conversations live in one record so pruning is possible; per-thread keys
-// would grow without bound as you review card after card.
-async function loadThread(key) {
-  const { [STORE_KEY]: store = {} } = await chrome.storage.local.get(STORE_KEY);
-  const thread = store[key];
-  return Array.isArray(thread?.messages) ? thread.messages : [];
+// Conversations are deliberately per-session. Moving between cards or guide
+// levels still returns you to what you were asking about, because that is one
+// sitting; closing the page ends them. They used to persist to
+// chrome.storage.local, which meant a question asked once was kept
+// indefinitely — for a throwaway "what does this 了 do?" that is a liability,
+// not a feature, and it left the transcript of every study session on disk.
+//
+// One record keyed by thread, pruned to MAX_THREADS, so a long review session
+// cannot grow this without bound either.
+const threads = new Map();
+
+function loadThread(key) {
+  const messages = threads.get(key);
+  return Array.isArray(messages) ? messages : [];
 }
 
-async function saveThread(key, messages) {
-  const { [STORE_KEY]: store = {} } = await chrome.storage.local.get(STORE_KEY);
-  store[key] = { at: Date.now(), messages: messages.slice(-MAX_HISTORY) };
-  const keys = Object.keys(store);
-  if (keys.length > MAX_THREADS) {
-    keys.sort((a, b) => (store[b].at || 0) - (store[a].at || 0));
-    for (const stale of keys.slice(MAX_THREADS)) delete store[stale];
+function saveThread(key, messages) {
+  // Re-inserting moves the key to the end, so Map's insertion order is an LRU
+  // and the oldest conversation is the one dropped.
+  threads.delete(key);
+  threads.set(key, messages.slice(-MAX_HISTORY));
+  for (const stale of [...threads.keys()].slice(0, Math.max(0, threads.size - MAX_THREADS))) {
+    threads.delete(stale);
   }
-  await chrome.storage.local.set({ [STORE_KEY]: store });
 }
+
+// Chats written by an earlier version are still on disk and nothing reads them
+// now. Drop them once per page rather than leaving old transcripts behind.
+chrome.storage.local.remove(LEGACY_STORE_KEY).catch(() => {});
 
 async function postAsk(meta, payload) {
   const res = await fetch(`${meta.serverUrl.replace(/\/+$/, '')}/api/ask`, {
@@ -488,13 +499,13 @@ export function createTutor(options) {
     // answer belongs to the thread it was asked in, not to whatever is on
     // screen now.
     if (key !== currentKey) {
-      await saveThread(key, [...history, answer]);
+      saveThread(key, [...history, answer]);
       return;
     }
     history.push(answer);
     history = history.slice(-MAX_HISTORY);
     renderChat();
-    await saveThread(key, history);
+    saveThread(key, history);
   }
 
   composerEl.addEventListener('submit', (e) => {
@@ -544,8 +555,7 @@ export function createTutor(options) {
     if (key === currentKey) return;
     currentKey = key;
     clearQuote();
-    history = await loadThread(key);
-    if (key !== currentKey) return; // switched again while loading
+    history = loadThread(key);
     const meta = await getSyncMeta();
     if (key !== currentKey) return;
     if (!meta || !meta.token || !meta.serverUrl) showSetup();

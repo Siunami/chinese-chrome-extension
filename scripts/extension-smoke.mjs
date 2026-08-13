@@ -1210,6 +1210,36 @@ await check('the tutor asks the Worker with the card as context', async () => {
   assert.match(asked.context.where, /flashcard/);
   assert.match(asked.context.text, /Word card:|Sentence card:/);
 });
+// Chats are a sitting, not a record: nothing about the conversation should
+// survive the page, and the storage key an older build wrote must be cleaned
+// up rather than left on disk holding old transcripts.
+await check('a chat does not outlive the page', async () => {
+  // Something an older build would have persisted, to prove it gets cleared.
+  await review.evalJs(`chrome.storage.local.set({ tutorChats: {
+    'card:old': { at: 1, messages: [{ role: 'user', content: 'from a past session' }] } } })`);
+  assert.equal(await review.evalJs(
+    'document.querySelectorAll(".tutor .msg .bubble").length > 0'), true,
+  'no conversation on screen to lose');
+
+  await review.evalJs('window.__stale = true');
+  await review.evalJs('location.reload()');
+  await review.waitFor('!window.__stale && !!document.getElementById("reveal")',
+    'the reloaded card');
+  await review.evalJs('document.getElementById("reveal").click()');
+  await review.waitFor('!!document.querySelector(".tutor")', 'the tutor');
+
+  assert.equal(await review.evalJs(
+    'document.querySelectorAll(".tutor .msg .bubble").length'), 0,
+  'the previous conversation came back after a reload');
+  assert.equal(await review.evalJs(
+    '(async () => (await chrome.storage.local.get("tutorChats")).tutorChats)()'), undefined,
+  'chat history is still being written to storage');
+
+  // Leave the drawer as the next check expects to find it — the reload above
+  // closed it.
+  await review.evalJs('document.getElementById("tutorLauncher").click()');
+  await review.waitFor('!document.querySelector(".tutor").hidden', 'the tutor drawer');
+});
 await check('the drawer stays open across cards until it is closed', async () => {
   assert.equal(await review.evalJs('document.querySelector(".tutor").hidden'), false);
   await review.evalJs('[...document.querySelectorAll(".grade")][2].click()');
