@@ -11,13 +11,12 @@ import { forecastChart, stageBar } from './lib/progress.js';
 import { gradePronunciation } from './lib/pronounce.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
+import { mountShell } from './lib/shell.js';
 
 const { createSelectionBar } = globalThis.ZhongwenSaveCard;
 
 
-if (new URLSearchParams(location.search).has('embedded')) {
-  document.body.classList.add('embedded');
-}
+mountShell({ active: 'review' });
 
 const appEl = document.getElementById('app');
 const statsEl = document.getElementById('stats');

@@ -10,15 +10,14 @@ import { buildProfile } from './lib/profile.js';
 import { DEFAULT_SERVER_URL, aiHeaders, getSyncMeta, newToken } from './lib/sync.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
+import { mountShell } from './lib/shell.js';
 
 const { createSelectionBar } = globalThis.ZhongwenSaveCard;
 
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const MIN_WORDS = 5;
 
-if (new URLSearchParams(location.search).has('embedded')) {
-  document.body.classList.add('embedded');
-}
+mountShell({ active: 'news' });
 
 const appEl = document.getElementById('app');
 const statusEl = document.getElementById('status');

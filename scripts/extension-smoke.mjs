@@ -7,12 +7,15 @@
 // order, the shared popup, the guides, hover-to-define — is the shipped code.
 //
 // Usage: node scripts/extension-smoke.mjs
-//   CHROME=/path/to/chrome to override the browser.
+//   CHROME=/path/to/chrome    override the browser.
+//   ZX_SHOTS=/some/dir        also write a PNG of each page. Off by default;
+//                             every assertion here can pass on a page that
+//                             looks wrong, and twice now one did.
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -503,9 +506,17 @@ async function openPage(page) {
     });
   }
 
+  // Debug affordance, off unless ZX_SHOTS names a directory: the assertions
+  // can all pass on a page that looks broken.
+  async function shot(name) {
+    if (!process.env.ZX_SHOTS) return;
+    const { data } = await cdp('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(join(process.env.ZX_SHOTS, `${name}.png`), Buffer.from(data, 'base64'));
+  }
+
   return {
     page, evalJs, waitFor, popupHtml, popupBox, waitForPopup, pressKey, moveMouseTo,
-    dragSelect, clickAt, actionPoint, waitForAction, settle, errors,
+    dragSelect, clickAt, actionPoint, waitForAction, settle, shot, errors,
     close: () => ws.close(),
   };
 }
@@ -732,11 +743,18 @@ hsk.close();
 
 // --- the other surfaces ----------------------------------------------------
 
-for (const [page, ready] of [
-  ['review.html', '!!document.getElementById("app")'],
-  ['wordlist.html', '!!document.getElementById("list")'],
-  ['news.html', '!!document.getElementById("app")'],
-  ['options.html', '!!document.getElementById("saved")'],
+// Every standalone page wears the same navbar from lib/shell.js. Asserting the
+// tab set here is what stops the drift this replaced: five hand-written navs
+// that had grown different link lists, and one still advertising a page that
+// no longer existed.
+const NAV_TABS = ['Review', 'Library', 'Guides', 'News'];
+
+for (const [page, ready, active] of [
+  ['review.html', '!!document.getElementById("app")', 'review'],
+  ['wordlist.html', '!!document.getElementById("list")', 'library'],
+  ['news.html', '!!document.getElementById("app")', 'news'],
+  ['hsk.html', '!!document.getElementById("rail")', 'guides'],
+  ['options.html', '!!document.getElementById("saved")', 'options'],
 ]) {
   const tab = await openPage(page);
   await check(`${page} boots with the shared popup available`, async () => {
@@ -746,6 +764,22 @@ for (const [page, ready] of [
         'lib/popup.js did not load');
     }
     assert.deepEqual(tab.errors, []);
+  });
+  await tab.shot(page.replace('.html', ''));
+  await check(`${page} shows the shared navbar with ${active} current`, async () => {
+    await tab.waitFor('!!document.querySelector(".zx-header .tab")', 'the navbar');
+    assert.deepEqual(
+      await tab.evalJs(
+        '[...document.querySelectorAll(".zx-header .tab-label")].map(t => t.textContent.trim())'),
+      NAV_TABS);
+    // Links, not buttons: a standalone page navigates rather than swapping frames.
+    assert.equal(await tab.evalJs(
+      '[...document.querySelectorAll(".zx-header .tab")].every(t => t.tagName === "A")'), true,
+    'standalone tabs should be links');
+    const current = await tab.evalJs(
+      '(document.querySelector(".zx-header [aria-current=page]") || {}).dataset?.view'
+      + ' ?? (document.querySelector(".zx-settings.active") ? "options" : null)');
+    assert.equal(current, active);
   });
   tab.close();
 }
@@ -792,13 +826,14 @@ await check('the dashboard shows every view as a tab', async () => {
     await dash.evalJs('[...document.querySelectorAll(".tab")].map(t => t.dataset.view)'),
     ['review', 'library', 'guides', 'news']);
 });
+await dash.shot('newtab');
 await check('opening a lazy tab keeps the top bar instead of navigating away', async () => {
   await dash.evalJs(
     '[...document.querySelectorAll(".tab")].find(t => t.dataset.view === "guides").click()');
   await dash.waitFor('document.getElementById("guidesFrame").classList.contains("active")',
     'the guides frame');
   assert.equal(await dash.evalJs('document.querySelector(".tab.active").dataset.view'), 'guides');
-  assert.equal(await dash.evalJs('!!document.querySelector("header .brand")'), true,
+  assert.equal(await dash.evalJs('!!document.querySelector(".zx-header .zx-brand")'), true,
     'the top bar is gone');
   assert.equal(await dash.evalJs('location.pathname.endsWith("newtab.html")'), true,
     'the dashboard navigated away instead of switching tabs');
