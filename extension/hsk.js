@@ -335,15 +335,11 @@ function sectionContextFor(node) {
 }
 
 const tutor = createTutor({
-  mode: 'docked',
-  container: document.getElementById('tutorSlot'),
   lookup,
-  title: 'Ask about this guide',
   subtitle: 'Highlight any part of the guide to ask about it',
   selectionBar,
   sectionFor: sectionContextFor,
   context: () => ({ level: guide?.level, where: `the HSK ${guide?.level} study guide` }),
-  threadKey: () => `hsk:${guide?.level ?? 1}`,
   intro: () => `Ask anything about the HSK ${guide?.level} guide. Highlight a sentence, `
     + 'a grammar box, or a word first and the answer will be about that exact text.',
   starters: () => {

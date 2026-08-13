@@ -152,7 +152,7 @@ test('only lib/tutor.js implements the chat', () => {
     const source = code(file);
     assert.ok(!source.includes('/api/ask'),
       `${file} calls /api/ask directly; that belongs in lib/tutor.js`);
-    assert.ok(!source.includes('tutorChats'),
+    assert.ok(!source.includes('tutorChatLog'),
       `${file} touches tutor storage directly; that belongs in lib/tutor.js`);
   }
 });

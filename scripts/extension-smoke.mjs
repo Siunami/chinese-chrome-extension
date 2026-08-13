@@ -746,6 +746,36 @@ await check('dropping the quote clears the chip and the mark', async () => {
   await hsk.waitFor('document.getElementById("quoteChip").hidden', 'the chip to clear');
   assert.equal(await hsk.evalJs('CSS.highlights.has("tutor-quote")'), false);
 });
+// The guides used to dock the tutor as a third column; it is the same
+// right-edge drawer as everywhere else now.
+await check('the guides open the tutor as a drawer, not a docked column', async () => {
+  assert.equal(await hsk.evalJs('!!document.querySelector(".chat-slot")'), false,
+    'the docked column is still in the markup');
+  assert.equal(await hsk.evalJs('!!document.querySelector(".tutor.tutor-drawer")'), true,
+    'no drawer on the guides');
+  // Earlier checks on this page left it open; closing must fall back to the
+  // launcher rather than removing the tutor from the page.
+  await hsk.evalJs(`(() => {
+    const close = document.querySelector('.tutor-close');
+    if (!document.querySelector('.tutor').hidden) close.click();
+  })()`);
+  await hsk.waitFor('document.querySelector(".tutor").hidden', 'the closed drawer');
+  assert.equal(await hsk.evalJs('document.getElementById("tutorLauncher").hidden'), false,
+    'closing the drawer left no way back into it');
+  await hsk.evalJs('document.getElementById("tutorLauncher").click()');
+  await hsk.waitFor('!document.querySelector(".tutor").hidden', 'the drawer');
+  // Right edge, full height — the same panel the other pages slide out.
+  const box = await hsk.evalJs(`(() => {
+    const r = document.querySelector('.tutor').getBoundingClientRect();
+    return { right: Math.round(innerWidth - r.right), top: Math.round(r.top),
+      width: Math.round(r.width) };
+  })()`);
+  assert.equal(box.right, 0, `drawer is ${box.right}px off the right edge`);
+  assert.equal(box.top, 0, 'drawer does not run full height');
+  assert.ok(box.width > 200, `drawer is only ${box.width}px wide`);
+  await hsk.shot('tutor-drawer-guides');
+  await hsk.evalJs('document.querySelector(".tutor-close").click()');
+});
 await check('hsk.html raised no page errors', () => assert.deepEqual(hsk.errors, []));
 hsk.close();
 
@@ -1210,36 +1240,90 @@ await check('the tutor asks the Worker with the card as context', async () => {
   assert.match(asked.context.where, /flashcard/);
   assert.match(asked.context.text, /Word card:|Sentence card:/);
 });
-// Chats are a sitting, not a record: nothing about the conversation should
-// survive the page, and the storage key an older build wrote must be cleaned
-// up rather than left on disk holding old transcripts.
-await check('a chat does not outlive the page', async () => {
-  // Something an older build would have persisted, to prove it gets cleared.
-  await review.evalJs(`chrome.storage.local.set({ tutorChats: {
-    'card:old': { at: 1, messages: [{ role: 'user', content: 'from a past session' }] } } })`);
-  assert.equal(await review.evalJs(
-    'document.querySelectorAll(".tutor .msg .bubble").length > 0'), true,
-  'no conversation on screen to lose');
+// One chat, kept and navigable. It used to be a different thread per card,
+// silently swapped as you moved, so a question asked two cards ago was
+// somewhere you could not get back to.
+await check('a chat survives a reload and is the one you come back to', async () => {
+  const shown = await review.evalJs(
+    '[...document.querySelectorAll(".tutor .msg .bubble")].map(b => b.textContent).join("|")');
+  assert.ok(shown.includes('How is this word actually used?'),
+    'no conversation on screen to keep');
 
   await review.evalJs('window.__stale = true');
   await review.evalJs('location.reload()');
   await review.waitFor('!window.__stale && !!document.getElementById("reveal")',
     'the reloaded card');
   await review.evalJs('document.getElementById("reveal").click()');
-  await review.waitFor('!!document.querySelector(".tutor")', 'the tutor');
-
-  assert.equal(await review.evalJs(
-    'document.querySelectorAll(".tutor .msg .bubble").length'), 0,
-  'the previous conversation came back after a reload');
-  assert.equal(await review.evalJs(
-    '(async () => (await chrome.storage.local.get("tutorChats")).tutorChats)()'), undefined,
-  'chat history is still being written to storage');
-
-  // Leave the drawer as the next check expects to find it — the reload above
-  // closed it.
+  await review.waitFor('!document.getElementById("tutorLauncher").hidden', 'the launcher');
   await review.evalJs('document.getElementById("tutorLauncher").click()');
-  await review.waitFor('!document.querySelector(".tutor").hidden', 'the tutor drawer');
+  await review.waitFor('!document.querySelector(".tutor").hidden', 'the drawer');
+  await review.waitFor(
+    'document.querySelectorAll(".tutor .msg .bubble").length > 0', 'the restored chat');
+  const after = await review.evalJs(
+    '[...document.querySelectorAll(".tutor .msg .bubble")].map(b => b.textContent).join("|")');
+  assert.ok(after.includes('How is this word actually used?'),
+    'the conversation did not survive the reload');
 });
+
+// The headline of unifying it: the chat opened on the library page is the one
+// still on screen on the review card, so a question asked earlier is context
+// for the next one rather than stranded on the page it was asked from.
+await check('one chat follows you between pages', async () => {
+  const shown = await review.evalJs(
+    '[...document.querySelectorAll(".tutor .msg .bubble")].map(b => b.textContent).join("|")');
+  assert.ok(shown.includes('What does this word mean?'),
+    'the library conversation did not carry over to the review card');
+  assert.ok(shown.includes('How is this word actually used?'),
+    'the review question is not in the same conversation');
+});
+
+await check('previous chats are listed and can be reopened', async () => {
+  const opener = 'What does this word mean?'; // the chat currently on screen
+  await review.evalJs('document.querySelector(".tutor-head .tutor-icon").click()');
+  await review.waitFor('document.querySelectorAll(".tutor .msg .bubble").length === 0',
+    'an empty new chat');
+  await review.evalJs(`(() => {
+    const box = document.getElementById('question');
+    box.value = 'A second, different question';
+    document.getElementById('composer').requestSubmit();
+  })()`);
+  await review.waitFor('document.querySelectorAll(".tutor .msg.bot .bubble").length > 0',
+    'the second answer');
+
+  // The list replaces the log, and names each chat after the question that
+  // started it.
+  await review.evalJs('document.getElementById("tutorHistory").click()');
+  await review.waitFor('!!document.querySelector(".tutor-histlist")', 'the history list');
+  const titles = await review.evalJs(
+    '[...document.querySelectorAll(".tutor-histopen .title")].map(t => t.textContent)');
+  assert.deepEqual(titles.slice(0, 2), ['A second, different question', opener],
+    `newest first, named by their opening question; got ${JSON.stringify(titles)}`);
+  assert.equal(await review.evalJs('document.querySelector(".tutor-composer").hidden'), true,
+    'the composer should step aside for the list');
+  await review.shot('tutor-history');
+
+  // Reopening the older one brings its messages back, and does not run the two
+  // conversations together.
+  await review.evalJs(`(() => {
+    const rows = [...document.querySelectorAll('.tutor-histopen')];
+    rows.find(r => r.textContent.includes(${JSON.stringify(opener)})).click();
+  })()`);
+  await review.waitFor('!document.querySelector(".tutor-composer").hidden', 'the composer');
+  const reopened = await review.evalJs(
+    '[...document.querySelectorAll(".tutor .msg .bubble")].map(b => b.textContent).join("|")');
+  assert.ok(reopened.includes('How is this word actually used?'), 'the old chat did not reopen');
+  assert.ok(!reopened.includes('A second, different question'),
+    'the two conversations ran together');
+
+  // And back out to the newest, so the next check starts where it expects to.
+  await review.evalJs('document.getElementById("tutorHistory").click()');
+  await review.waitFor('!!document.querySelector(".tutor-histlist")', 'the history list');
+  await review.evalJs(`(() => {
+    document.querySelectorAll('.tutor-histopen')[0].click();
+  })()`);
+  await review.waitFor('!document.querySelector(".tutor-composer").hidden', 'the composer');
+});
+
 await check('the drawer stays open across cards until it is closed', async () => {
   assert.equal(await review.evalJs('document.querySelector(".tutor").hidden'), false);
   await review.evalJs('[...document.querySelectorAll(".grade")][2].click()');

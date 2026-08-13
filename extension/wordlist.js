@@ -29,15 +29,11 @@ const selectionBar = createSelectionBar({ root: () => listEl, lookup });
 // a word in any row to ask about that one; otherwise it answers about the
 // collection.
 const tutor = createTutor({
-  mode: 'drawer',
   lookup,
-  title: 'Ask about your words',
   subtitle: 'Highlight a word in any row to ask about it',
-  launcher: '💬 Ask',
   selectionBar,
   sectionFor: () => ({ section: 'Saved library', text: '' }),
   context: () => ({ where: 'their saved flashcard library' }),
-  threadKey: () => 'library',
   intro: () => 'Highlight a word in the list and ask why it keeps slipping, how it '
     + 'differs from a word you already know, or for a sentence that would make it '
     + 'stick.',
