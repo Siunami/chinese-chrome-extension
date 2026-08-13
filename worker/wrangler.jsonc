@@ -1,0 +1,64 @@
+// Cloudflare Worker that syncs flashcards between the extension and the PWA,
+// and serves the PWA itself as static assets (one origin, no CORS needed for
+// the app). Deploy: create the D1 database once with
+//   wrangler d1 create zhongwen-sync
+// paste the returned database_id below, apply the schema with
+//   wrangler d1 execute zhongwen-sync --remote --file=schema.sql
+// then `wrangler deploy`. Local dev: `wrangler d1 execute zhongwen-sync
+// --local --file=schema.sql` then `wrangler dev`.
+//
+// AI features (/api/news, /api/ask, /api/translate) need a model provider.
+// There are two ways to pay for it, and REQUIRE_USER_KEY below picks which:
+//
+//   "true"  — shared deployment. Every AI request must carry the caller's own
+//             key in the `x-provider-key` header (the extension's Options page
+//             collects it). Nobody spends the Worker owner's key. This is how
+//             the public deployment runs; leave it on if anyone but you pairs
+//             with your Worker.
+//   unset   — private deployment. Set one of the secret groups below and every
+//             paired device gets the AI features with no key of its own.
+//
+// Either way the secrets are set with `wrangler secret`, never in this file;
+// the Worker prefers OpenAI, then Azure OpenAI, then fal.ai. See README.
+//   OpenAI (recommended):    wrangler secret put OPENAI_API_KEY     # native web search; (optional) OPENAI_MODEL, default gpt-4o
+//   Azure OpenAI (Foundry):  wrangler secret put AZURE_OPENAI_KEY
+//                            wrangler secret put AZURE_OPENAI_ENDPOINT     # https://<resource>.openai.azure.com
+//                            wrangler secret put AZURE_OPENAI_DEPLOYMENT   # your GPT deployment name
+//                            (optional) AZURE_OPENAI_API_VERSION, default "preview"
+//   fal.ai:                  wrangler secret put FAL_KEY            # no web tool: Worker uses Google News RSS; (optional) FAL_MODEL, default anthropic/claude-3.5-sonnet
+// Local dev: put the same names in worker/.dev.vars (gitignored). Without any
+// provider the endpoint returns 503 and the rest of the Worker is unaffected.
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "zhongwen-sync",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-08",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    // See the header comment. Remove this (or set it to "false") only if you
+    // are the sole user of your own deployment.
+    "REQUIRE_USER_KEY": "true"
+  },
+  "assets": {
+    "directory": "../pwa",
+    // API routes must never be swallowed by the asset handler.
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zhongwen-sync",
+      // Self-hosting? `wrangler d1 create zhongwen-sync` prints a new id —
+      // paste it here. A D1 id is not a secret (it is meaningless without the
+      // account credentials wrangler holds), but it only resolves inside the
+      // account that owns it, so a fork must replace it before deploying.
+      "database_id": "dbf7a08c-a0cd-4108-b290-34a87856e60c"
+    }
+  ],
+  "triggers": {
+    // Daily tombstone purge (see scheduled() in src/index.js).
+    "crons": ["17 4 * * *"]
+  }
+}

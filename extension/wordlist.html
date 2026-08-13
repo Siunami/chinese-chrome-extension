@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Zhongwen Explorer — Saved Library</title>
+  <style>
+    /* An author `display` rule outranks the UA's [hidden] rule, so anything
+       toggled with .hidden needs this or it never actually hides. */
+    [hidden] { display: none !important; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 860px; margin: 32px auto; padding: 0 16px; color: #222;
+      font-size: 14px;
+    }
+    h1 { font-size: 20px; }
+    .nav { display: flex; gap: 14px; align-items: center; margin: 4px 0 16px; }
+    .nav a { color: #b5232b; font-weight: 600; text-decoration: none; }
+    .nav a:hover { text-decoration: underline; }
+    .badge { background: #b5232b; color: #fff; border-radius: 10px;
+      padding: 1px 8px; font-size: 12px; font-weight: 700; }
+    .toolbar { margin: 12px 0 20px; display: flex; gap: 10px; align-items: center; }
+    button { padding: 5px 12px; font-size: 13px; cursor: pointer; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #e4e4e4; vertical-align: top; }
+    th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #888; }
+    td.hanzi { font-size: 18px; white-space: nowrap;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    tr.sentence-card td.hanzi { min-width: 240px; white-space: normal;
+      font-size: 16px; line-height: 1.55; }
+    tr.sentence-card td.pinyin { min-width: 220px; white-space: normal; line-height: 1.45; }
+    .type-badge { display: inline-block; margin-left: 6px; padding: 1px 5px;
+      border-radius: 8px; background: #eef4ff; color: #416895; font: 700 9px/1.5
+      -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-transform: uppercase; }
+    .speak { margin-left: 5px; padding: 2px 5px; border: 0; border-radius: 50%;
+      background: transparent; font-size: 12px; opacity: 0.58; }
+    .speak:hover { background: #eef4ff; opacity: 1; }
+    td.pinyin { white-space: nowrap; color: #444; }
+    td.meta { white-space: nowrap; color: #777; font-size: 12.5px; }
+    td.status { white-space: nowrap; font-size: 12.5px; }
+    .st-new { color: #1a6fd4; font-weight: 600; }
+    .st-due { color: #b5232b; font-weight: 600; }
+    .st-later { color: #0a7a2f; }
+    td.del { width: 30px; }
+    td.del button { padding: 1px 7px; color: #a33; }
+    .empty { color: #888; margin-top: 24px; }
+    .count { color: #888; font-size: 13px; margin-left: auto; }
+
+    /* Collection overview: the curve, and what is coming back when. */
+    #overview { border: 1px solid #e6e0d2; border-radius: 12px;
+      padding: 16px 18px; background: #fffdf7; margin-bottom: 16px; }
+    #overview:empty { display: none; }
+    .overview-line { font-size: 13px; color: #666; margin-bottom: 14px; }
+    .overview-line b { color: #222; font-variant-numeric: tabular-nums; }
+    .overview-grid { display: grid; grid-template-columns: minmax(210px, 1fr) 1.6fr;
+      gap: 22px; align-items: start; }
+    @media (max-width: 720px) { .overview-grid { grid-template-columns: 1fr; } }
+
+    /* Filter chips + sort. */
+    #filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+      margin-bottom: 10px; }
+    #filters:empty { display: none; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+      border: 1px solid #e0d9c9; border-radius: 20px; background: #fff;
+      font-size: 12px; color: #555; cursor: pointer; }
+    .chip:hover { background: #faf7ee; }
+    .chip.on { border-color: #d8cab5; background: #fdf6c7; color: #7f1920;
+      font-weight: 650; }
+    .chip-dot { width: 8px; height: 8px; border-radius: 2px; }
+    .chip-n { color: #999; font-variant-numeric: tabular-nums; }
+    .chip.on .chip-n { color: #a0733a; }
+    .sort { display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+      font-size: 12px; color: #888; }
+    .sort select { font-size: 12px; padding: 3px 5px; }
+
+    /* Per-card schedule. */
+    td.sched { white-space: nowrap; }
+    .sched-top { display: flex; align-items: center; gap: 7px; }
+    .stage-chip { font-size: 10px; font-weight: 700; letter-spacing: 0.03em;
+      text-transform: uppercase; padding: 1px 6px; border-radius: 9px;
+      background: #f1f1f1; color: #666; }
+    .stage-chip.stage-new { background: #eaf2fd; color: #2f6099; }
+    .stage-chip.stage-learning { background: #e7f0fc; color: #1f5fb0; }
+    .stage-chip.stage-young { background: #e2ecfa; color: #1d5399; }
+    .stage-chip.stage-mature { background: #dde7f6; color: #123a6d; }
+    .sched-detail { color: #999; font-size: 11.5px; margin-top: 3px;
+      font-variant-numeric: tabular-nums; }
+    body.embedded { max-width: 1040px; margin-top: 18px; margin-bottom: 40px; }
+    body.embedded > h1, body.embedded > .nav { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Saved library</h1>
+  <div class="nav">
+    <a href="review.html">Review</a>
+    <span class="badge" id="dueBadge" hidden></span>
+    <a href="hsk.html">HSK guides</a>
+    <a href="news.html">News</a>
+    <a href="practice.html">Pronunciation</a>
+    <a href="options.html">Options</a>
+  </div>
+  <div class="toolbar">
+    <button id="export">Export TSV (Anki / Pleco)</button>
+    <button id="clear">Clear all</button>
+    <span class="count" id="count"></span>
+  </div>
+  <div id="overview"></div>
+  <div id="filters"></div>
+  <div id="list"></div>
+  <!-- The universal popup is a classic script (shared verbatim with the
+       content script), so it must load before the page module. -->
+  <script src="lib/popup.js"></script>
+  <script src="lib/savecard.js"></script>
+  <script type="module" src="wordlist.js"></script>
+</body>
+</html>

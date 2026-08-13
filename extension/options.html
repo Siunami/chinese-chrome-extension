@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Zhongwen Explorer — Options</title>
+  <style>
+    /* An author `display` rule outranks the UA's [hidden] rule, so anything
+       toggled with .hidden needs this or it never actually hides. */
+    [hidden] { display: none !important; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 560px; margin: 32px auto; padding: 0 16px; color: #222;
+      font-size: 14px; line-height: 1.5;
+    }
+    h1 { font-size: 20px; }
+    h2 { font-size: 15px; margin-top: 24px; }
+    .row { margin: 10px 0; display: flex; align-items: center; gap: 10px; }
+    .row label { flex: 1; }
+    select, input[type="number"] { padding: 3px 6px; font-size: 14px; }
+    select { max-width: 330px; }
+    button { padding: 5px 10px; border: 1px solid #bbb; border-radius: 5px;
+      background: #fff; cursor: pointer; }
+    button:hover { background: #f5f5f5; }
+    output { min-width: 32px; font-variant-numeric: tabular-nums; }
+    .note { color: #777; font-size: 12.5px; margin-top: 4px; }
+    a { color: #b5232b; }
+    .saved { color: #0a7a2f; font-weight: 600; margin-left: 8px; visibility: hidden; }
+    hr { border: 0; border-top: 1px solid #ddd; margin: 24px 0; }
+  </style>
+</head>
+<body>
+  <h1>Zhongwen Explorer</h1>
+  <p>Hover over Chinese text to see pinyin, definitions, and example sentences.
+     Click the toolbar icon to turn the extension on or off.</p>
+
+  <h2>Popup</h2>
+  <div class="row">
+    <label for="theme">Theme</label>
+    <select id="theme">
+      <option value="yellow">Classic yellow</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="toneColors">Tone colors (Pleco-style: 1 red, 2 green, 3 blue, 4 purple)</label>
+    <input type="checkbox" id="toneColors">
+  </div>
+  <div class="row">
+    <label for="hanziPref">Character preference</label>
+    <select id="hanziPref">
+      <option value="simp-first">Simplified first</option>
+      <option value="trad-first">Traditional first</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="showHints">Show keyboard hints in the popup</label>
+    <input type="checkbox" id="showHints">
+  </div>
+
+  <h2>Pronunciation</h2>
+  <div class="row">
+    <label for="mandarinVoice">Mandarin voice</label>
+    <select id="mandarinVoice">
+      <option value="auto">Auto — best available</option>
+    </select>
+    <button type="button" id="testVoice">▶ Test</button>
+  </div>
+  <div class="row">
+    <label for="voiceRate">Speaking speed</label>
+    <input type="range" id="voiceRate" min="0.55" max="1.25" step="0.05">
+    <output id="voiceRateValue">0.95×</output>
+  </div>
+  <p class="note" id="voiceNote">Auto prefers enhanced, neural, and natural
+     Mandarin voices over compact voices. The list contains the voices Chrome
+     can currently access on this Mac.</p>
+
+  <h2>Example sentences</h2>
+  <div class="row">
+    <label for="exampleCount">Number of example sentences (0 disables them; default 8)</label>
+    <input type="number" id="exampleCount" min="0" max="15" step="1">
+  </div>
+  <div class="row">
+    <label for="examplePinyin">Show pinyin under example sentences</label>
+    <input type="checkbox" id="examplePinyin">
+  </div>
+  <p class="note">Sentence pinyin is generated automatically by dictionary
+     segmentation, so a rare multi-reading character can occasionally show the
+     wrong reading.</p>
+
+  <h2>Review schedule</h2>
+  <div class="row">
+    <label for="newPerDay">New words introduced per day (default 15)</label>
+    <input type="number" id="newPerDay" min="0" max="200" step="1">
+  </div>
+  <div class="row">
+    <label for="maxPerDay">Maximum cards in a day's session (default 60)</label>
+    <input type="number" id="maxPerDay" min="1" max="1000" step="1">
+  </div>
+  <p class="note">These are daily limits, not per-session ones: once a day's new
+     words are introduced, the review page says so instead of handing you an
+     endless supply. Meeting a batch again tomorrow is what moves it into
+     memory. The end-of-session screen can always pull more forward.</p>
+
+  <h2>AI features</h2>
+  <p class="note">The news digest, the tutor, and English backs for sentences
+     the dictionary cannot translate are written by a model on your own API
+     key. Paste an <a href="https://platform.openai.com/api-keys" target="_blank"
+     rel="noopener">OpenAI key</a> (or a fal.ai key) below — one key turns on
+     all three. It is stored in this browser only, sent with those requests so
+     the sync server can forward them to the provider, and never stored on the
+     server. Everything else — the hover popup, the dictionary, saving,
+     flashcards, review — works with no key at all.</p>
+  <div class="row">
+    <label for="aiKey">API key</label>
+    <input type="password" id="aiKey" size="34" placeholder="sk-…" autocomplete="off"
+           spellcheck="false">
+    <span class="note" id="aiKeyStatus"></span>
+  </div>
+  <p class="note">Typical cost is well under a dollar a month: a news digest is
+     one call (cached 12 hours), the tutor and translation are short calls with
+     hourly caps. Leave it empty to keep everything off.</p>
+
+  <h2>Phone sync</h2>
+  <div id="syncSetup" hidden>
+    <p class="note">Review your flashcards on your phone. Cards sync through a
+       small server you control (a free Cloudflare Worker — see
+       <code>worker/</code> in the project). No account needed: your browser
+       generates a private pairing code.</p>
+    <div class="row">
+      <label for="syncServer">Sync server URL</label>
+      <input type="url" id="syncServer" size="34" placeholder="https://…workers.dev">
+    </div>
+    <div class="row">
+      <button type="button" id="syncEnable">Enable phone sync</button>
+    </div>
+  </div>
+  <div id="syncPaired" hidden>
+    <p class="note">Scan this code with your phone's camera to open the review
+       app already paired. Anyone with this code can read and change your
+       cards, so treat it like a password.</p>
+    <div class="row"><img id="syncQr" alt="Pairing QR code" width="196" height="196"></div>
+    <div class="row">
+      <label>Pairing code</label>
+      <code id="syncToken" style="user-select: all;"></code>
+    </div>
+    <div class="row">
+      <label>App link</label>
+      <a id="syncLink" target="_blank" rel="noopener"></a>
+    </div>
+    <div class="row">
+      <button type="button" id="syncNowBtn">Sync now</button>
+      <button type="button" id="syncRotate">Rotate code</button>
+      <button type="button" id="syncDisable">Turn off</button>
+      <span class="note" id="syncStatus"></span>
+    </div>
+  </div>
+
+  <hr>
+  <p><a href="wordlist.html">Saved library</a> — words and full example
+     sentences saved for review, with dates and save counts.</p>
+  <p><a href="review.html">Review</a> — spaced-repetition flashcards
+     (SM-2 style) for your saved words, with example sentences on the back.</p>
+  <p><a href="practice.html">Pronunciation practice</a> — free-form speaking
+     drill that grades each syllable; a separate axis from review that never
+     touches your schedule.</p>
+  <p><a href="hsk.html">HSK study guides</a> — a guide for every level 1-9
+     (grammar, vocabulary, a reading passage, common mistakes), hoverable like
+     any other page, with a tutor you can point at whatever you highlight.</p>
+  <p class="note">Dictionary: <a href="https://www.mdbg.net/chinese/dictionary?page=cedict">CC-CEDICT</a>
+     (CC BY-SA 4.0). Example sentences: <a href="https://tatoeba.org">Tatoeba</a>
+     via manythings.org (CC-BY 2.0 FR; per-sentence attribution is preserved in
+     the bundled data file).</p>
+  <span class="saved" id="saved">Saved ✓</span>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

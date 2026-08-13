@@ -1,0 +1,13 @@
+{
+  "name": "Zhongwen Flashcards",
+  "short_name": "Zhongwen",
+  "description": "Spaced-repetition review for words saved with the Zhongwen Explorer Chrome extension.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#faf8f2",
+  "theme_color": "#B5232B",
+  "icons": [
+    { "src": "icons/icon192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
