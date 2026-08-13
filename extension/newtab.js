@@ -6,7 +6,6 @@ const frames = {
   library: document.getElementById('libraryFrame'),
   guides: document.getElementById('guidesFrame'),
   news: document.getElementById('newsFrame'),
-  pronounce: document.getElementById('pronounceFrame'),
 };
 const reviewCountEl = document.getElementById('reviewCount');
 const savedCountEl = document.getElementById('savedCount');

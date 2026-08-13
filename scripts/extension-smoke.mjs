@@ -735,7 +735,6 @@ hsk.close();
 for (const [page, ready] of [
   ['review.html', '!!document.getElementById("app")'],
   ['wordlist.html', '!!document.getElementById("list")'],
-  ['practice.html', '!!document.getElementById("app")'],
   ['news.html', '!!document.getElementById("app")'],
   ['options.html', '!!document.getElementById("saved")'],
 ]) {
@@ -788,17 +787,17 @@ await check('the dashboard shows every view as a tab', async () => {
   // The tabs are static markup; wait for newtab.js to have wired them, or a
   // click lands before there is a handler to receive it.
   await dash.waitFor('!!document.querySelector(".tab[aria-selected]")', 'the dashboard script');
-  await dash.waitFor('document.querySelectorAll(".tab").length === 5', 'five tabs');
+  await dash.waitFor('document.querySelectorAll(".tab").length === 4', 'four tabs');
   assert.deepEqual(
     await dash.evalJs('[...document.querySelectorAll(".tab")].map(t => t.dataset.view)'),
-    ['review', 'library', 'guides', 'news', 'pronounce']);
+    ['review', 'library', 'guides', 'news']);
 });
-await check('opening Pronounce keeps the top bar instead of navigating away', async () => {
+await check('opening a lazy tab keeps the top bar instead of navigating away', async () => {
   await dash.evalJs(
-    '[...document.querySelectorAll(".tab")].find(t => t.dataset.view === "pronounce").click()');
-  await dash.waitFor('document.getElementById("pronounceFrame").classList.contains("active")',
-    'the pronounce frame');
-  assert.equal(await dash.evalJs('document.querySelector(".tab.active").dataset.view'), 'pronounce');
+    '[...document.querySelectorAll(".tab")].find(t => t.dataset.view === "guides").click()');
+  await dash.waitFor('document.getElementById("guidesFrame").classList.contains("active")',
+    'the guides frame');
+  assert.equal(await dash.evalJs('document.querySelector(".tab.active").dataset.view'), 'guides');
   assert.equal(await dash.evalJs('!!document.querySelector("header .brand")'), true,
     'the top bar is gone');
   assert.equal(await dash.evalJs('location.pathname.endsWith("newtab.html")'), true,
@@ -808,7 +807,7 @@ await check('opening Pronounce keeps the top bar instead of navigating away', as
 // dashboard shows two headers stacked on top of each other.
 for (const [view, frame] of [
   ['review', 'reviewFrame'], ['library', 'libraryFrame'], ['guides', 'guidesFrame'],
-  ['news', 'newsFrame'], ['pronounce', 'pronounceFrame'],
+  ['news', 'newsFrame'],
 ]) {
   await check(`the ${view} tab draws no second header`, async () => {
     await dash.evalJs(
@@ -862,10 +861,6 @@ await check('hovering works inside the embedded guides tab', async () => {
   const view = await dash.evalJs('[innerWidth, innerHeight]');
   assert.ok(box.x < view[0] && box.right > 0 && box.y < view[1] && box.bottom > 0,
     `popup is off-screen at ${JSON.stringify(box)} in a ${view.join('x')} viewport`);
-});
-await check('the microphone is allowed through to the embedded practice page', async () => {
-  assert.equal(await dash.evalJs(
-    'document.getElementById("pronounceFrame").getAttribute("allow")'), 'microphone');
 });
 await check('newtab.html raised no page errors', () => assert.deepEqual(dash.errors, []));
 dash.close();
