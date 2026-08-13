@@ -57,21 +57,27 @@ const rss = (titles) => new Response(
 );
 
 // The Worker gathers headlines itself, so a run touches Google News as well as
-// the model. `search` is what a topical query finds and `top` is the front
-// page it falls back to — kept separate because the whole point of a topic
-// search is that it must NOT quietly fall back.
+// the model. `search` is what a topical query finds — an array for "whatever
+// was asked", or a function of the query itself, for the tests about which
+// words were searched. `top` is the front page it falls back to, kept separate
+// because the whole point of a topic search is that it must NOT fall back.
 function stub({ replies = [PLAN, DIGEST], search = ['Beach cleanup'], top = ['Front page story'] } = {}) {
   const calls = [];
+  const searched = [];
   const real = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     const href = String(url);
-    if (href.includes('news.google.com/rss/search')) return rss(search);
+    if (href.includes('news.google.com/rss/search')) {
+      const query = decodeURIComponent(new URL(href).searchParams.get('q') || '');
+      searched.push(query);
+      return rss(typeof search === 'function' ? search(query) : search);
+    }
     if (href.includes('news.google.com/rss')) return rss(top);
     if (href.includes('bbci.co.uk') || href.includes('rss.dw.com')) return rss([]);
     calls.push(JSON.parse(init.body));
     return Response.json({ output_text: replies[Math.min(calls.length - 1, replies.length - 1)] });
   };
-  return { calls, restore: () => { globalThis.fetch = real; } };
+  return { calls, searched, restore: () => { globalThis.fetch = real; } };
 }
 
 const post = (path, body) => new Request(`https://example.com${path}`, {
@@ -88,7 +94,13 @@ async function run(request, { db = fakeDb(), ...stubOpts } = {}) {
   const stubbed = stub(stubOpts);
   try {
     const res = await worker.fetch(request, { DB: db, OPENAI_API_KEY: 'k' });
-    return { status: res.status, body: await res.json(), calls: stubbed.calls, db };
+    return {
+      status: res.status,
+      body: await res.json(),
+      calls: stubbed.calls,
+      searched: stubbed.searched,
+      db,
+    };
   } finally {
     stubbed.restore();
   }
@@ -130,6 +142,29 @@ await test('a plain generate carries no topic at all', async () => {
 });
 
 // --- what happens when a topic finds nothing --------------------------------
+
+// Pressing 音乐 and being told there is no music news is absurd. It happened
+// because the planner narrowed the chip to something nobody published today.
+await test('a plan too narrow to find anything is retried with the topic itself', async () => {
+  const { status, body, searched, calls } = await run(
+    newsRequest({ topic: { label: '音乐', query: '音乐 新闻' } }),
+    {
+      replies: [JSON.stringify({ hsk: 2, topics: ['音乐'], queries: ['华语乐坛 新歌发布'] }), DIGEST],
+      // Only the plain words find anything, which is the real Google News.
+      search: (q) => (q === '音乐' ? ['Music news'] : []),
+    });
+  assert.ok(searched.includes('音乐'),
+    `the bare topic was never searched; tried ${searched.join(', ')}`);
+  assert.equal(status, 200, `pressing a category must not dead-end: ${JSON.stringify(body).slice(0, 160)}`);
+  assert.equal(calls.length, 2, 'the passage should have been written from the retry');
+});
+
+await test('the retry only runs when the first pass came up empty', async () => {
+  const { searched } = await run(
+    newsRequest({ topic: { label: '音乐', query: '音乐 新闻' } }),
+    { replies: [JSON.stringify({ hsk: 2, topics: ['音乐'], queries: ['音乐'] }), DIGEST] });
+  assert.deepEqual(searched, ['音乐'], `one query was enough; searched ${searched.join(', ')}`);
+});
 
 await test('a topic search that finds nothing says so, and does not use the front page', async () => {
   const { status, body, calls } = await run(
@@ -222,6 +257,19 @@ await test('suggested categories come back named, deduped and capped', async () 
   assert.equal(body.categories[0].english, 'Environment', 'the English gloss is what a beginner reads');
   const sport = body.categories.find((c) => c.label === '体育');
   assert.equal(sport.query, '体育', 'a category with no query of its own searches for its own name');
+});
+
+// The other half of the same failure: a chip nobody could have news for. The
+// instruction is easy to lose in an edit of a 20-line prompt, and the only
+// symptom is a learner pressing a category and being told there is none.
+await test('the categories prompt asks for sections, not subjects', async () => {
+  const { calls } = await run(
+    post('/api/news/categories', { profile: PROFILE }), { replies: [CATEGORIES] });
+  const system = String(calls[0]?.instructions || '');
+  assert.match(system, /SECTION, NOT A SUBJECT|section, not a subject/i,
+    'nothing stops a chip being as narrow as the deck that suggested it');
+  assert.match(system, /独立摇滚|音乐节/,
+    'the too-narrow example that made this rule necessary is gone');
 });
 
 await test('suggesting categories is capped per hour of its own', async () => {

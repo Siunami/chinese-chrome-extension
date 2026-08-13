@@ -494,8 +494,16 @@ Chinese news site labels its sections (科技, 环境, 体育) with a small Engl
 gloss underneath: 2-4 drawn from what your saved words say you care about, the
 rest the standard sections so there is always somewhere to go. Suggesting them
 is a model call, so it waits for a click like everything else here — after that
-they are cached for a week (`POST /api/news/categories`). A topic search that
-finds no current news says so and names the topic, rather than quietly handing
+they are cached for a week (`POST /api/news/categories`).
+
+Categories are **sections, not subjects** — broad enough that a news site has
+something under them most days. Pressing 音乐 and being told there is no music
+news is absurd, and it happened: the planner had narrowed that chip to
+华语乐坛 新歌发布, which genuinely had nothing under it that day. Two things stop
+it now. The plan's first query has to be the topic in its plainest words (音乐,
+not 华语乐坛 新歌发布), and a search that still comes back empty is retried with
+the bare words you pressed or typed before anything gives up. If a topic really
+has no current news, the page says so and names it, rather than quietly handing
 you the front page under the label you asked for.
 
 **Every article is kept.** Generating one used to overwrite the last. Now each

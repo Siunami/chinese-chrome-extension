@@ -297,6 +297,8 @@ Estimate CONSERVATIVELY: a deck of a few hundred everyday words is usually HSK 1
 
 If the message carries a REQUESTED TOPIC, that is what the learner searched for or picked from a category, and it replaces the inference: every query must be about it and "topics" must lead with it. A request written in English, or as a whole question ("what is happening with the trade talks"), becomes natural Chinese search terms — search terms, not a translated sentence. Estimate their level from the profile either way.
 
+START BROAD. The FIRST query must be the requested topic itself in the plainest words it would be searched with — 音乐, not 华语乐坛 新歌发布; 体育, not 中超联赛 第22轮 战报. Narrower angles may follow, but a first query nobody has published anything under today means the learner presses a category and is told there is no news about it, which is almost never true.
+
 Respond with ONLY a JSON object (no markdown fences):
 {
   "hsk": <integer 1-6, your single best estimate>,
@@ -314,6 +316,8 @@ const CATEGORIES_SYSTEM = `You choose the sections of a personalized Chinese new
 From their flashcard profile, propose ${MAX_CATEGORIES} news categories to offer them as buttons. Mix two kinds:
 - 2-4 drawn from what their saved words show they actually care about (a deck full of 球队、比赛、教练 earns 体育; one full of 房租、工资、市场 earns 财经).
 - The rest the standard sections any Chinese news site has, so there is always somewhere to go: 国际、国内、科技、财经、健康、教育、环境、文化、娱乐、体育.
+
+EVERY CATEGORY MUST BE A SECTION, NOT A SUBJECT. A section is broad enough that a news site publishes something under it most days. The learner's own words tell you which section to offer, never how narrow to make it: a deck of 吉他、乐队、演唱会 earns 娱乐 or 音乐 — never 独立摇滚 or 音乐节筹备. If you are choosing between a subject and the section it belongs to, take the section. A chip that is too specific finds nothing, and being told there is no news about the thing you just pressed is worse than not being offered it.
 
 Each category is:
 - "label": the section name in Simplified Chinese, 2-4 characters, exactly as a Chinese news site would print it. Never a translated English phrase.
@@ -796,10 +800,19 @@ async function fetchNews(profile, env, difficulty = 'normal', topic = null) {
   const target = clampHsk(estimated + delta);
 
   // 2. Fetch real, current headlines (keyless Google News RSS).
-  const items = await gatherNews(queries, { fallback: !topic });
+  let items = await gatherNews(queries, { fallback: !topic });
+  // Pressing 音乐 and being told there is no music news is absurd, and it was
+  // not the category's fault: the planner had narrowed it to something like
+  // 华语乐坛 新歌发布, which genuinely has nothing on it today. Before giving up
+  // on a topic, ask for the topic itself — the plain words the learner pressed
+  // or typed, which is the broadest form of what they asked for.
+  if (items.length === 0 && topic) {
+    const plain = [...new Set([topic.label, topic.query, `${topic.label} 新闻`])];
+    items = await gatherNews(plain.filter((q) => !queries.includes(q)), { fallback: false });
+  }
   if (items.length === 0) {
     throw new Error(topic
-      ? `no current news found for “${topic.label}” — try a broader topic`
+      ? `no current news found for “${topic.label}” — try another topic, or Generate today's news`
       : 'no current news found for these topics');
   }
 
