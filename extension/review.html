@@ -32,9 +32,9 @@
       font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
     .pinyin { font-size: 24px; font-weight: 500; }
     .answer-line { display: flex; align-items: center; justify-content: center; gap: 8px; }
-    .speak { width: 32px; height: 32px; padding: 0; border-radius: 50%;
-      font-size: 15px; line-height: 1; }
-    .example .speak { width: 25px; height: 25px; margin-left: 5px; font-size: 12px; }
+    /* Size only; shell.css owns the shape and the centring. */
+    .speak { --zx-speak: 32px; }
+    .example .speak { --zx-speak: 25px; margin-left: 5px; }
     .defs { font-size: 16px; color: #333; max-width: 480px; margin: 0 auto; }
     .example { margin-top: 14px; font-size: 15px; color: #444; }
     .example .zh { font-size: 18px;

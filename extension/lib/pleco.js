@@ -9,10 +9,14 @@
 //   XML  — "Export Cards" -> Pleco Flashcard File. One <card> per card, with
 //          separate <headword> elements for the simplified and traditional
 //          forms, numbered pinyin in <pron>, and <defn> for the definition.
-//   Text — "Export Cards" -> Text File. One card per line, tab separated:
-//          `headword <tab> pinyin <tab> definition`, with the traditional form
-//          folded into the headword as 简[繁]. This is the same shape the
-//          library's own TSV export writes, so a deck can round-trip.
+//   Text — "Export Cards" -> Text File. One card per line:
+//          `headword <sep> pinyin <sep> definition`, with the traditional form
+//          folded into the headword as 简[繁]. Pleco offers tab OR comma as the
+//          separator on the way out and remembers whichever you last picked, so
+//          both are read here — a file that fails to import because of a radio
+//          button three screens back is not a thing anyone should debug. The
+//          tab flavour is the same shape the library's own TSV export writes,
+//          so a deck can round-trip.
 //
 // Parsing only. Nothing here touches the dictionary or builds a card: the
 // caller hands each headword to the background worker, which resolves it
@@ -75,19 +79,49 @@ function parseXml(text) {
   return items;
 }
 
+// One CSV row into fields, honouring quotes: a Pleco definition regularly
+// contains a comma ("noun computer, PC"), and Pleco quotes the field when it
+// does. `""` inside a quoted field is a literal quote.
+export function splitCsvRow(row) {
+  const out = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < row.length; i++) {
+    const c = row[i];
+    if (quoted) {
+      if (c !== '"') { field += c; continue; }
+      if (row[i + 1] === '"') { field += '"'; i++; continue; }
+      quoted = false;
+      continue;
+    }
+    if (c === '"') { quoted = true; continue; }
+    if (c === ',') { out.push(field); field = ''; continue; }
+    field += c;
+  }
+  out.push(field);
+  return out.map((f) => f.trim());
+}
+
+// Tabs win when the line has any: a tab-separated definition may legitimately
+// contain commas, so guessing "comma" for such a line would split it apart.
+// Only a line with no tab at all is read as CSV.
+function splitRow(row) {
+  return row.includes('\t') ? row.split('\t').map((f) => f.trim()) : splitCsvRow(row);
+}
+
 function parseText(text) {
   const items = [];
   for (const line of String(text).split(/\r?\n/)) {
     const row = line.trim();
     if (!row || row.startsWith('//') || row.startsWith('#')) continue;
-    const [head = '', pinyin = '', ...rest] = row.split('\t');
+    const [head = '', pinyin = '', ...rest] = splitRow(row);
     const { simp, trad } = splitHeadword(head);
     items.push({
       simp,
       trad,
       pinyin: spacePlecoPinyin(pinyin),
-      // Pleco puts the whole definition in one field, but a stray tab inside it
-      // would otherwise truncate the card silently.
+      // Pleco puts the whole definition in one field, but a stray separator
+      // inside it would otherwise truncate the card silently.
       defs: rest.join(' ').replace(/\s+/g, ' ').trim(),
     });
   }

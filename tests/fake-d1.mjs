@@ -3,7 +3,7 @@
 // tests/ask.test.mjs and tests/translate.test.mjs so both agree on the schema
 // they are pretending to be.
 
-export function fakeDb({ users = [], usage = [] } = {}) {
+export function fakeDb({ users = [], usage = [], news = new Map() } = {}) {
   const statement = (sql, args = []) => ({
     bind: (...bound) => statement(sql, bound),
     async first() {
@@ -11,6 +11,8 @@ export function fakeDb({ users = [], usage = [] } = {}) {
         return users.find((u) => u.token_hash === args[0]) || null;
       }
       if (sql.includes('COUNT(*) AS recent FROM users')) return { recent: 0 };
+      // The per-user news cache. Empty by default, so a test asks the model.
+      if (sql.includes('FROM news WHERE user_id')) return news.get(args[0]) || null;
       if (sql.includes('COUNT(*) AS recent FROM usage_log')) {
         const [userId, kind, since] = args;
         return {
@@ -26,6 +28,8 @@ export function fakeDb({ users = [], usage = [] } = {}) {
         users.push({ id: users.length + 1, version: 0, token_hash: args[0] });
       } else if (sql.startsWith('INSERT INTO usage_log')) {
         usage.push({ user_id: args[0], kind: args[1], created_at: args[2] });
+      } else if (sql.startsWith('INSERT INTO news')) {
+        news.set(args[0], { doc: args[1], created_at: args[3] });
       }
       return { meta: { changes: 1 } };
     },

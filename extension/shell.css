@@ -107,24 +107,50 @@ body.embedded .zx-header { display: none; }
 
 .zx-spacer { flex: 1; }
 
-/* Simplified / traditional. A segmented pair rather than a single button that
-   flips: which script you are in should be readable at a glance, not inferred
-   from what the button offers to switch you to. */
+/* Simplified / traditional. A switch you slide, not two buttons that light up:
+   the script you are reading in is wherever the thumb is sitting, and moving
+   between them is one gesture — click the other half, drag the thumb across, or
+   press ← / →. Both glyphs stay legible, so the choice is readable at a glance
+   rather than inferred from what a single button offers to switch you to.
+ *
+ * The selectors carry the extra `.zx-script` because the shared control styles
+ * further down (`.zx-app button`) outrank a lone class and would otherwise
+ * repaint each half as an ordinary bordered button. */
 .zx-script {
-  display: flex; gap: 2px; padding: 2px; margin-right: 4px;
-  border: 1px solid var(--zx-line); border-radius: 9px; background: #f6f2e7;
+  --zx-script-w: 36px;
+  position: relative; flex: none; display: flex; align-items: center;
+  padding: 3px; margin-right: 4px;
+  border: 1px solid var(--zx-line); border-radius: 999px; background: #efe9dc;
+  /* The thumb is draggable, so the browser must not claim the gesture. */
+  touch-action: none; user-select: none;
 }
-.zx-script-btn {
-  padding: 3px 9px; border: 1px solid transparent; border-radius: 7px;
-  background: transparent; color: #8a8272; font-size: 14px; line-height: 1.3;
-  font-family: var(--zx-hanzi); cursor: pointer;
+.zx-script-thumb {
+  position: absolute; top: 3px; left: 3px;
+  width: var(--zx-script-w); height: calc(100% - 6px);
+  border: 1px solid #d8cab5; border-radius: 999px; background: var(--zx-surface);
+  box-shadow: 0 1px 2px rgba(60, 48, 24, 0.14);
+  transition: transform 0.2s cubic-bezier(0.4, 0.05, 0.2, 1);
 }
-.zx-script-btn:hover { color: var(--zx-red); }
-.zx-script-btn.active {
-  border-color: #d8cab5; background: var(--zx-surface); color: var(--zx-red-deep);
-  font-weight: 700;
+.zx-script[data-pref="trad-first"] .zx-script-thumb {
+  transform: translateX(var(--zx-script-w));
 }
-.zx-script-btn:focus-visible { outline: 2px solid var(--zx-red); outline-offset: 1px; }
+/* Mid-drag the thumb tracks the finger, so it must not also be easing. */
+.zx-script.dragging .zx-script-thumb { transition: none; }
+.zx-script .zx-script-btn {
+  position: relative; /* above the thumb */
+  width: var(--zx-script-w); padding: 2px 0;
+  border: 0; border-radius: 999px; background: none; color: #8a8272;
+  font-size: 14px; line-height: 1.45; font-family: var(--zx-hanzi);
+  text-align: center; cursor: pointer; transition: color 0.15s ease;
+}
+/* Four classes deep to clear `.zx-app button:hover:not(:disabled)`, which would
+   otherwise paint a hover background over the thumb. */
+.zx-script .zx-script-btn:hover:not(.active) { background: none; color: var(--zx-red); }
+.zx-script .zx-script-btn.active { color: var(--zx-red-deep); font-weight: 700; }
+.zx-script .zx-script-btn:focus-visible { outline: 2px solid var(--zx-red); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .zx-script-thumb { transition: none; }
+}
 
 .zx-settings {
   padding: 6px 10px; border: 1px solid transparent; border-radius: 8px;
@@ -142,7 +168,7 @@ body.embedded .zx-header { display: none; }
   .zx-header { padding: 9px 12px; gap: 8px; }
   .zx-brand-text { display: none; }
   .tab { padding: 7px 9px; }
-  .zx-script-btn { padding: 3px 7px; }
+  .zx-script { --zx-script-w: 31px; }
 }
 
 /* --- page frame ---------------------------------------------------------- */
@@ -200,6 +226,17 @@ body.zx-app.embedded .zx-content {
   border-color: var(--zx-red); background: var(--zx-red); color: #fff;
 }
 .zx-app button.primary:hover:not(:disabled) { background: #9d1e25; }
+/* Round "play this" buttons, everywhere one appears. The size is per-page (a
+   headline wants a bigger one than a table row), but the centring belongs here:
+   `.zx-app button` above outranks a page's own `.speak { padding: 0 }`, so the
+   glyph was being pushed up and to the left inside its circle on every page. */
+.zx-app .speak {
+  flex: none; display: inline-grid; place-items: center;
+  width: var(--zx-speak, 28px); height: var(--zx-speak, 28px);
+  padding: 0; border-radius: 50%;
+  font-size: calc(var(--zx-speak, 28px) * 0.47); line-height: 1;
+}
+
 .zx-app input:focus-visible,
 .zx-app select:focus-visible,
 .zx-app button:focus-visible,
