@@ -13,6 +13,7 @@ import { splitSentences } from './lib/cards.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
+import { convertDeep, getHanziPref, onHanziPref } from './lib/hanzi.js';
 
 const { saver, createSelectionBar } = globalThis.ZhongwenSaveCard;
 
@@ -54,7 +55,9 @@ function saveStar(item, describe) {
   });
 }
 
-let guide = null;            // the level currently on screen
+let guide = null;            // the level currently on screen, already converted
+let currentLevel = null;     // its number, so a script flip can re-render it
+let hanziPref = 'simp-first';
 let readings = new Map();    // Chinese string -> pinyin, per guide
 let showPassagePinyin = false;
 let showPassageEnglish = false;
@@ -298,13 +301,19 @@ function renderGuideBody() {
 
 async function selectLevel(level) {
   const seq = ++renderSeq;
-  const next = guideByLevel(level);
-  if (!next) return;
-  guide = next;
+  const source = guideByLevel(level);
+  if (!source) return;
+  currentLevel = level;
   showPassagePinyin = false;
   showPassageEnglish = false;
   renderRail(level);
   guideEl.replaceChildren(el('p', 'empty', 'Loading…'));
+  // Guides are written in simplified. Convert the whole object up front rather
+  // than at each place it prints a character: once the text is in per-character
+  // spans there is no word left to segment, and 发 becomes a guess.
+  const next = await convertDeep(source, hanziPref);
+  if (seq !== renderSeq) return;
+  guide = next;
   const map = await loadReadings(chineseStrings(next));
   if (seq !== renderSeq) return; // the learner switched level while we waited
   readings = map;
@@ -312,10 +321,17 @@ async function selectLevel(level) {
   guideEl.scrollTop = 0;
   await chrome.storage.local.set({ hskLevel: level });
   if (seq !== renderSeq) return;
-  // Each level keeps its own conversation, and switching drops any quote left
-  // pointing at the guide that just went away.
-  await tutor.setThread();
+  // Switching level drops any quote left pointing at the guide that just went
+  // away.
+  tutor.setThread();
 }
+
+// The whole guide is Chinese, so flipping the script re-renders it. Readings
+// are re-derived too: pinyin is per character, and the characters changed.
+onHanziPref(async (pref) => {
+  hanziPref = pref;
+  if (currentLevel) await selectLevel(currentLevel);
+});
 
 // ---------------------------------------------------------------------------
 // The tutor sidebar (lib/tutor.js). It owns highlight-to-ask, the chat, and
@@ -357,6 +373,7 @@ const tutor = createTutor({
 // ---------------------------------------------------------------------------
 
 async function init() {
+  hanziPref = await getHanziPref();
   const { hskLevel } = await chrome.storage.local.get('hskLevel');
   const level = HSK_GUIDES.some((g) => g.level === hskLevel) ? hskLevel : 1;
   await selectLevel(level);

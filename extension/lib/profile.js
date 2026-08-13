@@ -6,6 +6,11 @@
 const RECENT_LIMIT = 60;
 const STRUGGLING_LIMIT = 25;
 const KNOWN_LIMIT = 60;
+// Words actually in the review queue right now. Distinct from `recentWords`,
+// which is recently *saved* — a word can sit saved and untouched for weeks,
+// while the ones being drilled this week are what the learner most wants to
+// meet again in the wild.
+const STUDYING_LIMIT = 40;
 const STRUGGLING_LAPSES = 2; // failed after graduating at least twice, or…
 const STRUGGLING_EASE = 1.8; // …ease ground down well below the 2.5 start
 const KNOWN_MIN_REPS = 2; // graduated (a couple of successful reviews) and…
@@ -38,6 +43,12 @@ export function buildProfile(words) {
   const recent = [...vocab].sort(
     (a, b) => (b.lastSavedAt || b.savedAt || 0) - (a.lastSavedAt || a.savedAt || 0),
   );
+  // In the SRS and not yet mature: seen recently enough to be live, not so
+  // well known that meeting it again teaches nothing. Most recently reviewed
+  // first, so the passage leans on this week's work.
+  const studying = reviewed
+    .filter((w) => (w.srs.ivl || 0) < MATURE_IVL_DAYS)
+    .sort((a, b) => (b.srs.reviewedAt || 0) - (a.srs.reviewedAt || 0));
   const avgEase = reviewed.length
     ? Math.round((reviewed.reduce((sum, w) => sum + w.srs.ease, 0) / reviewed.length) * 100) / 100
     : null;
@@ -49,6 +60,7 @@ export function buildProfile(words) {
     strugglingCount: struggling.length,
     avgEase,
     knownWords: known.slice(0, KNOWN_LIMIT).map((w) => w.simp),
+    studyingWords: studying.slice(0, STUDYING_LIMIT).map((w) => w.simp),
     recentWords: recent.slice(0, RECENT_LIMIT).map((w) => w.simp),
     strugglingWords: struggling.slice(0, STRUGGLING_LIMIT).map((w) => w.simp),
   };

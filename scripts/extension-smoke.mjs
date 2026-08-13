@@ -24,6 +24,7 @@ import {
   charBreakdown, rankEntryIndices, parsePinyin, findExamples, sentencePinyin,
 } from '../extension/lib/cedict.js';
 import { resolveCard } from '../extension/lib/cards.js';
+import { buildScriptMap, convertText } from '../extension/lib/script.js';
 import { cardKey } from '../extension/lib/merge.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -36,6 +37,7 @@ const chromePath = process.env.CHROME ||
 const entries = parseDictTSV(readFileSync(join(extDir, 'data/dict.tsv'), 'utf8'));
 const index = buildIndex(entries);
 const relatedIndex = buildRelatedIndex(entries);
+const scriptMap = buildScriptMap(entries);
 const sentences = [];
 for (const line of readFileSync(join(extDir, 'data/sentences.tsv'), 'utf8').split('\n')) {
   if (!line) continue;
@@ -82,6 +84,10 @@ const handlers = {
       .map((s) => ({ zh: s.zh, py: s.py, en: s.en })),
   }),
   speak: () => ({ ok: true }),
+  convertScript: (msg) => ({
+    texts: (msg.texts || []).map(
+      (t) => convertText(index, entries, scriptMap, String(t ?? ''), msg.to)),
+  }),
   // Shaping a card needs the dictionary, so it happens here, exactly as the
   // service worker does it. Whether the card is already saved is filled in by
   // the shim, which is where the word list lives.
@@ -812,6 +818,33 @@ await check('the guides open the tutor as a drawer, not a docked column', async 
   await hsk.shot('tutor-drawer-guides');
   await hsk.evalJs('document.querySelector(".tutor-close").click()');
 });
+// The toggle has to move the whole app, not just the surfaces that happen to
+// store both forms. A guide is written in simplified, so flipping to
+// traditional has to convert it — and by word, so 发 lands right.
+await check('flipping to traditional converts the guide, and back again', async () => {
+  await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
+  await hsk.waitFor('!!document.querySelector(".passage p")', 'the passage');
+  const passage = () => hsk.evalJs('document.querySelector(".passage").textContent');
+  const before = await passage();
+  assert.ok(/[\u4e00-\u9fff]/.test(before), 'no Chinese in the guide to convert');
+
+  await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "trad-first" })');
+  await hsk.waitFor(
+    `document.querySelector('.passage')?.textContent !== ${JSON.stringify(before)}`,
+    'the guide to convert');
+  const after = await passage();
+  assert.notEqual(after, before, 'the guide did not change script');
+  // Converted, not mangled: same length, still Chinese, no empty gaps.
+  assert.equal(Array.from(after.trim()).length, Array.from(before.trim()).length,
+    'conversion changed the length of the passage');
+  assert.ok(/[\u4e00-\u9fff]/.test(after));
+
+  await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
+  await hsk.waitFor(
+    `document.querySelector('.passage')?.textContent === ${JSON.stringify(before)}`,
+    'the guide to convert back');
+  assert.deepEqual(hsk.errors, []);
+});
 await check('hsk.html raised no page errors', () => assert.deepEqual(hsk.errors, []));
 hsk.close();
 
@@ -1106,7 +1139,9 @@ await check('a Pleco export previews before it imports, and rows can be dropped'
   await library.setViewport(1365, 900);
   await library.evalJs('chrome.storage.local.set({ wordlist: [] })');
   await library.evalJs('location.reload()');
-  await library.waitFor('!!document.getElementById("import")', 'the import button');
+  // #import is static markup, present before wordlist.js has attached
+  // anything; #list having rendered is what says the module is running.
+  await library.waitFor('!!document.getElementById("list").textContent', 'the page');
 
   // The file input is driven directly: CDP cannot open a native file picker.
   await library.evalJs(`(() => {

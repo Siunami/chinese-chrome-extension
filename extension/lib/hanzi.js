@@ -55,6 +55,74 @@ export function forms(card, pref) {
     : { primary: simp, secondary: trad };
 }
 
+// -----------------------------------------------------------------------
+// Converting page text
+//
+// Cards carry both forms, so a card only has to choose. Everything else — a
+// study guide written in simplified, a generated news passage, an example
+// sentence — exists in one script and has to be converted, or the toggle only
+// moves the handful of surfaces that happen to store a pair.
+//
+// Conversion needs the dictionary (see lib/script.js: it segments and swaps
+// whole entries, because a character table gets 头发/发现 wrong), and the
+// dictionary lives in the background worker. So these ship the strings there
+// and back. One round trip per render, not one per string.
+// -----------------------------------------------------------------------
+
+export async function convertStrings(texts, pref) {
+  if (!texts.length) return texts;
+  const answer = await chrome.runtime.sendMessage({
+    type: 'convertScript',
+    texts,
+    to: isTradFirst(pref) ? 'trad' : 'simp',
+  }).catch(() => null);
+  // A failed conversion shows the original text, which is readable and honest;
+  // blanking the page would not be.
+  return Array.isArray(answer?.texts) && answer.texts.length === texts.length
+    ? answer.texts
+    : texts;
+}
+
+const HAS_CHINESE = /[\u3400-\u9fff\uf900-\ufaff]/;
+
+/**
+ * Deep-convert every Chinese-bearing string in a value (object, array or
+ * string), returning a new value of the same shape. Used on whole content
+ * objects — a guide, a news digest — so a page converts once, before render,
+ * rather than at every place it prints a character.
+ *
+ * Converting before render matters: once lib/lookup.js has wrapped text in
+ * per-character spans there is no word left to segment, and 发 would have to be
+ * guessed at.
+ */
+export async function convertDeep(value, pref) {
+  const strings = [];
+  const collect = (node) => {
+    if (typeof node === 'string') {
+      if (HAS_CHINESE.test(node)) strings.push(node);
+      return;
+    }
+    if (Array.isArray(node)) { node.forEach(collect); return; }
+    if (node && typeof node === 'object') Object.values(node).forEach(collect);
+  };
+  collect(value);
+  if (!strings.length) return value;
+
+  const converted = await convertStrings(strings, pref);
+  const byOriginal = new Map();
+  strings.forEach((s, i) => byOriginal.set(s, converted[i]));
+
+  const rebuild = (node) => {
+    if (typeof node === 'string') return byOriginal.get(node) ?? node;
+    if (Array.isArray(node)) return node.map(rebuild);
+    if (node && typeof node === 'object') {
+      return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, rebuild(v)]));
+    }
+    return node;
+  };
+  return rebuild(value);
+}
+
 // What to call the column or line holding the *other* form.
 export function secondaryLabel(pref) {
   return isTradFirst(pref) ? 'Simp.' : 'Trad.';

@@ -11,6 +11,7 @@ import { DEFAULT_SERVER_URL, aiHeaders, getSyncMeta, newToken } from './lib/sync
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
+import { convertDeep, getHanziPref, onHanziPref } from './lib/hanzi.js';
 
 const { createSelectionBar } = globalThis.ZhongwenSaveCard;
 
@@ -67,6 +68,11 @@ const tutor = createTutor({
   ],
 });
 
+let hanziPref = 'simp-first';
+// The digest as the model wrote it, always simplified. `digest` holds the
+// converted copy that is on screen, so flipping the script re-converts from
+// the original rather than converting a conversion.
+let sourceDigest = null;
 let englishShown = false;
 let difficulty = 'normal'; // 'easier' | 'normal' | 'harder', persisted below
 
@@ -105,7 +111,13 @@ function hideActionButtons() {
   difficultyLabel.hidden = true;
 }
 
-function render(data, fetchedAt) {
+// `data` is the digest as stored: simplified, as the model wrote it.
+async function render(data, fetchedAt) {
+  sourceDigest = data;
+  return paint(await convertDeep(data, hanziPref), fetchedAt);
+}
+
+function paint(data, fetchedAt) {
   lookup.hide();
   selectionBar.hide(); // its range points into the passage we are replacing
   appEl.replaceChildren();
@@ -220,13 +232,13 @@ async function generate(force) {
     const data = await postNews(meta, buildProfile(wordlist), force);
     const fetchedAt = data.generatedAt || Date.now();
     await chrome.storage.local.set({ newsDigest: { fetchedAt, data } });
-    render(data, fetchedAt);
+    await render(data, fetchedAt);
     if (data.stale) statusEl.textContent = `Showing your last digest (${fmtAgo(fetchedAt)}) — refresh failed, try again shortly`;
     else if (data.cached && force) statusEl.textContent = `Generated ${fmtAgo(fetchedAt)} — regenerating is limited to about once a minute`;
   } catch (err) {
     const { newsDigest = null } = await chrome.storage.local.get('newsDigest');
     if (newsDigest) {
-      render(newsDigest.data, newsDigest.fetchedAt);
+      await render(newsDigest.data, newsDigest.fetchedAt);
       statusEl.textContent = `Could not refresh: ${err.message}`;
     } else {
       appEl.replaceChildren(el('div', 'empty', `Could not generate your news: ${err.message}`));
@@ -272,7 +284,18 @@ function showSetup() {
   appEl.append(box);
 }
 
+// A passage is nothing but Chinese, so flipping the script repaints it —
+// converting the model's original again rather than converting what is on
+// screen, which would be a conversion of a conversion.
+onHanziPref(async (pref) => {
+  hanziPref = pref;
+  if (!sourceDigest) return;
+  const { newsDigest = null } = await chrome.storage.local.get('newsDigest');
+  await render(sourceDigest, newsDigest?.fetchedAt);
+});
+
 async function load() {
+  hanziPref = await getHanziPref();
   lookup.hide();
   // No passage yet means nothing to ask about; render() turns it back on.
   tutor.setAvailable(false);
@@ -288,7 +311,7 @@ async function load() {
   if (!meta || !meta.token || !meta.serverUrl) { showSetup(); return; }
 
   if (newsDigest) {
-    render(newsDigest.data, newsDigest.fetchedAt);
+    await render(newsDigest.data, newsDigest.fetchedAt);
     if (Date.now() - newsDigest.fetchedAt >= CACHE_TTL_MS) {
       statusEl.textContent = `Generated ${fmtAgo(newsDigest.fetchedAt)} — tap Regenerate for today's`;
     }

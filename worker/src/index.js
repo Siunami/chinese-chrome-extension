@@ -300,11 +300,32 @@ CALIBRATION IS THE MOST IMPORTANT REQUIREMENT. News is naturally full of hard, f
 
 Length by TARGET band: HSK 1-2 → about 80-150 Chinese characters; HSK 3-4 → 150-250; HSK 5-6 → 250-400. Keep to 3-5 short paragraphs.
 
-BUILD THE PASSAGE FROM THE LEARNER'S OWN VOCABULARY (listed in the message) — this is a primary goal, second only to staying at the target level:
+WRITE NATURAL CHINESE. THIS IS THE MOST IMPORTANT RULE AND IT OUTRANKS EVERYTHING BELOW, INCLUDING THE VOCABULARY INSTRUCTIONS.
+
+The failure this prompt exists to prevent is 翻译腔 — Chinese that is really English wearing Chinese characters. A native speaker reading a passage from you said "this reads like English translated Chinese" and pointed at 美丽的自然故事 ("beautiful nature story"): every character is a real word, the grammar parses, and no Chinese person would ever write it. That is the bar. Simple is not the same as wrong, and a learner who reads unnatural Chinese learns unnatural Chinese.
+
+Your register model is a 小学 or 初中 语文 textbook passage, or a children's news bulletin (少儿新闻) — writing that is genuinely simple AND genuinely native. It is not "news Chinese with the hard words removed", and it is not English prose translated downward. Natural and easy are not opposites; advanced vocabulary is not what makes writing sound Chinese.
+
+- NEVER build English-shaped noun phrases. Chinese leans on VERBS where English piles up nouns and adjectives. Say 大自然很美 or 关于大自然的故事, not 美丽的自然故事. Say 这里的空气很干净, not 干净的空气质量.
+- Stack at most one modifier before a noun. If you have written ADJ + 的 + ADJ + 的 + NOUN, or a whole clause + 的 + abstract noun, the sentence is English. Break it into two short Chinese sentences.
+- Use real collocations, the ones a speaker has heard: 看电视 not 见电视, 下雨 not 落雨水, 提高水平 not 做高水平, 取得成绩 not 得到成绩.
+- Correct, idiomatic measure words (一场比赛, 一条新闻, 一位专家, 一项研究) and correct 的/得/地.
+- Aspect and time the Chinese way: 了 for completion or change of state, 过 for experience, 在/正在 for ongoing; time and place words BEFORE the verb (他昨天去了北京, never 他去北京昨天).
+- Use topic-comment order, which is how Chinese actually organises a sentence: 这件事我知道 / 那个地方人很多. Reach for 把 and 被 only where a native writer would.
+- Drop pronouns and connectives that Chinese leaves out. English needs a subject in every clause; Chinese does not. 因为…所以… and 虽然…但是… do not belong in every paragraph.
+- Vary how sentences start. Real writing does not open six sentences in a row with 这个 or 我们.
+- Chinese punctuation only: ，。、；：？！ and 《》 for titles. Never a Latin comma or period inside Chinese text.
+- No pinyin, no English, no romanisation inside the passage.
+- Headlines are short verb phrases the way Chinese headlines actually are (科学家发现新的海洋动物), not English-style noun phrases (关于海洋动物的美丽发现).
+
+BEFORE YOU ANSWER, REREAD EVERY SENTENCE AND ASK: would a Chinese person say it this way, or does it sound translated? Rewrite every sentence that fails, even if that means dropping one of the learner's vocabulary words. A passage that is slightly off-topic or slightly short but sounds genuinely Chinese is a success; one that hits every target word and reads like a translation is a failure.
+
+BUILD THE PASSAGE FROM THE LEARNER'S OWN VOCABULARY (listed in the message) — a primary goal, after staying at the target level and writing natural Chinese:
+- Words IN THEIR REVIEW QUEUE RIGHT NOW come first. These are the cards they are actively drilling, and meeting one in a real sentence is worth more than any other word in the passage. Work in as many as read naturally — aim for a good handful — but never at the cost of a sentence a native speaker would not write.
 - Reuse the learner's KNOWN words liberally; the passage should feel assembled from words they recognize.
-- Work in several of the words they are CURRENTLY LEARNING, used naturally so they see them in real context.
-- Include a few of their STRUGGLING words too, in short, clear, unambiguous sentences that model correct usage.
-- Do NOT list the vocabulary or teach it explicitly — just use it naturally in the news writing.
+- Work in some of their RECENTLY SAVED words too, used naturally so they see them in real context.
+- Include a few of their STRUGGLING words, in short, clear, unambiguous sentences that model correct usage.
+- Do NOT list the vocabulary or teach it explicitly, and do NOT force a word in — just use it naturally in the news writing.
 
 ${OUTPUT_SHAPE}`;
 
@@ -629,8 +650,11 @@ async function fetchNews(profile, env, difficulty = 'normal') {
     .join('\n');
   const list = (xs) => (Array.isArray(xs) && xs.length ? xs.join('、') : '(none yet)');
   const vocabBlock = `The learner's vocabulary (build the passage from these):\n`
+    // Listed first and called out hardest: these are the cards in the review
+    // queue this week. Meeting one in a real sentence is the whole point.
+    + `- IN THEIR REVIEW QUEUE RIGHT NOW (use as many as read naturally — highest priority): ${list(profile.studyingWords)}\n`
     + `- Known words (reuse liberally): ${list(profile.knownWords)}\n`
-    + `- Currently learning (weave in naturally): ${list(profile.recentWords)}\n`
+    + `- Recently saved (weave in naturally): ${list(profile.recentWords)}\n`
     + `- Struggling with (include a few in clear, simple contexts): ${list(profile.strugglingWords)}`;
   const prompt = `TARGET HSK band: ${target} (write for a HSK ${target} reader; difficulty preference: ${difficulty}).\n`
     + `Learner's estimated level: ${level || `HSK ${estimated}`}\n\n`

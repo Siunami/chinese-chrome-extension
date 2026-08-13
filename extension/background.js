@@ -9,6 +9,7 @@ import {
   pickMandarinVoice, sortedMandarinVoices, voiceId,
 } from './lib/voices.js';
 import { resolveCard, isMachineGloss } from './lib/cards.js';
+import { buildScriptMap, convertText, TO_TRAD, TO_SIMP } from './lib/script.js';
 import { translateGlossed, isPermanent } from './lib/translate.js';
 import { cardKey, tombstoneFor } from './lib/merge.js';
 import { aiHeaders, getAiKey, getSyncMeta, syncNow } from './lib/sync.js';
@@ -27,13 +28,16 @@ async function loadData() {
   const entries = parseDictTSV(dictText);
   const index = buildIndex(entries);
   const relatedIndex = buildRelatedIndex(entries);
+  // Character fallback tables for simplified <-> traditional. Built with the
+  // indexes because it walks the same entries and is only worth doing once.
+  const scriptMap = buildScriptMap(entries);
   const sentences = [];
   for (const line of sentText.split('\n')) {
     if (!line) continue;
     const [zh, py, en] = line.split('\t');
     if (zh && en) sentences.push({ zh, py: py || '', en });
   }
-  return { entries, index, relatedIndex, sentences };
+  return { entries, index, relatedIndex, scriptMap, sentences };
 }
 
 function ensureData() {
@@ -130,6 +134,10 @@ const MAX_RESOLVE_ITEMS = 400;
 // Long enough that an oversized selection is refused by lib/cards.js with a
 // reason the bar can explain, rather than silently truncated into a card.
 const MAX_CARD_TEXT = 400;
+// A whole HSK guide converts in one request: every heading, example, vocabulary
+// item and passage sentence at once. The longest level stays well inside this.
+const MAX_CONVERT_TEXTS = 2000;
+const MAX_CONVERT_CHARS = 4000;
 let voicesPromise = null;
 
 function entryForDisplay(e) {
@@ -384,6 +392,24 @@ async function handleResolveCards(msg) {
   };
 }
 
+// Convert text into the script the 简/繁 toggle is set to.
+//
+// Lives here because conversion needs the dictionary: it segments first and
+// swaps whole entries, so 头发 becomes 頭髮 while 发现 becomes 發現 (see
+// lib/script.js). Pages send the strings they are about to render — a study
+// guide, a generated news passage — and get them back in the right script.
+async function handleConvertScript(msg) {
+  const texts = (Array.isArray(msg.texts) ? msg.texts : []).slice(0, MAX_CONVERT_TEXTS);
+  if (!texts.length) return { texts: [] };
+  const to = msg.to === TO_TRAD ? TO_TRAD : TO_SIMP;
+  const { entries, index, scriptMap } = await ensureData();
+  return {
+    texts: texts.map((t) => convertText(
+      index, entries, scriptMap, String(t ?? '').slice(0, MAX_CONVERT_CHARS), to,
+    )),
+  };
+}
+
 // Example sentences for a specific word (used by the review page).
 async function handleExamples(msg) {
   const { entries, index, sentences } = await ensureData();
@@ -479,6 +505,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     speak: handleSpeak,
     pinyinChars: handlePinyinChars,
     pinyinBatch: handlePinyinBatch,
+    convertScript: handleConvertScript,
     listVoices: handleListVoices,
     getEnabled: async () => ({ enabled: await getEnabled() }),
     syncNow: () => syncNow(),

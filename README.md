@@ -56,11 +56,13 @@ does well that popup dictionaries usually don't: **real example sentences**
   you are looking at rather than waiting for the next one. Both forms are
   always indexed and both stay on screen — the one you did not choose moves to
   the secondary line (and the library's second column renames itself to match),
-  so a card still teaches both. This is a display choice, never a conversion:
-  nothing rewrites text, so prose that exists only in one script — a study
-  guide, a generated news passage — is left as written. It was previously a
-  dropdown buried in Options that only the popup honoured, which meant a
-  traditional reader was studying the simplified form of their own cards.
+  so a card still teaches both. Prose that exists in only one script — a study
+  guide, a generated news passage — is **converted**, by word rather than by
+  character, because a character table cannot be right about both 头发 (頭髮)
+  and 发现 (發現); segmenting first and swapping whole dictionary entries can.
+  It was previously a dropdown buried in Options that only the popup honoured,
+  which meant a traditional reader was studying the simplified form of their
+  own cards on every other surface.
 - **Save words** — click the sticky **☆ save** button at the top of the popup
   or press `s` (`c` copies, `Esc` closes). Every save control is a toggle: a
   word already in your vocab list shows **✓ saved** instead of offering to

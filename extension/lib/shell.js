@@ -93,9 +93,18 @@ export function mountShell({ active, onSelect } = {}) {
   // Which script to study in is a thing you flip while reading, not a thing
   // you go to Settings for — a traditional reader had to dig a dropdown out of
   // the options page, and it only ever moved the popup anyway.
+  //
+  // It is a switch you slide: the thumb sits under whichever script you are
+  // reading in and travels to the other one. Click either half, drag the thumb
+  // across, or press ← / → — all three land on the same two states, because a
+  // two-position switch has nowhere else to go.
   const script = el('div', 'zx-script');
   script.setAttribute('role', 'group');
   script.setAttribute('aria-label', 'Character script');
+  const thumb = el('span', 'zx-script-thumb');
+  thumb.setAttribute('aria-hidden', 'true');
+  script.append(thumb);
+  const SCRIPTS = [SIMP_FIRST, TRAD_FIRST];
   const scriptButtons = [
     [SIMP_FIRST, '简', 'Show simplified first'],
     [TRAD_FIRST, '繁', 'Show traditional first'],
@@ -109,7 +118,52 @@ export function mountShell({ active, onSelect } = {}) {
     script.append(btn);
     return btn;
   });
+
+  // Dragging. The half the pointer is released over wins, so a press on 简 that
+  // ends over 繁 flips it — the gesture the control's shape promises. Pointer
+  // capture keeps a drag that wanders off the switch (easy, at 75px wide) from
+  // being lost, and retargets the click that follows to the group, which is why
+  // the buttons' own click handlers do not also fire and double-write.
+  const halfAt = (clientX) => {
+    const box = script.getBoundingClientRect();
+    return clientX - box.left < box.width / 2 ? SIMP_FIRST : TRAD_FIRST;
+  };
+  script.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    script.setPointerCapture?.(e.pointerId);
+    script.classList.add('dragging');
+  });
+  script.addEventListener('pointermove', (e) => {
+    // Follow the finger while it is down, so the thumb is being dragged rather
+    // than jumping once you let go.
+    if (script.classList.contains('dragging')) paintScript(halfAt(e.clientX));
+  });
+  const endDrag = (e) => {
+    if (!script.classList.contains('dragging')) return;
+    script.classList.remove('dragging');
+    script.releasePointerCapture?.(e.pointerId);
+    setHanziPref(halfAt(e.clientX));
+  };
+  script.addEventListener('pointerup', endDrag);
+  // A cancelled gesture (scroll takeover, window blur) leaves the thumb wherever
+  // the finger last was; put it back where the setting actually is.
+  script.addEventListener('pointercancel', () => {
+    script.classList.remove('dragging');
+    getHanziPref().then(paintScript);
+  });
+
+  script.addEventListener('keydown', (e) => {
+    const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const at = SCRIPTS.indexOf(script.dataset.pref);
+    const next = SCRIPTS[Math.min(SCRIPTS.length - 1, Math.max(0, at + step))];
+    setHanziPref(next);
+    scriptButtons[SCRIPTS.indexOf(next)].focus();
+  });
+
   function paintScript(pref) {
+    script.dataset.pref = pref; // slides the thumb; see shell.css
     for (const btn of scriptButtons) {
       const on = btn.dataset.pref === pref;
       btn.classList.toggle('active', on);

@@ -123,8 +123,11 @@
     }
     button:hover:not(:disabled) { background: #f5f0e4; }
     button:disabled { opacity: 0.55; cursor: default; }
-    .speak { width: 25px; height: 25px; padding: 0; margin-left: 5px;
-      border-radius: 50%; font-size: 12px; line-height: 1; vertical-align: middle; }
+    /* This page keeps its own copy: it owns its whole viewport, so it does not
+       wear body.zx-app and shell.css's .speak rule never reaches it. */
+    .speak { display: inline-grid; place-items: center; vertical-align: middle;
+      width: 25px; height: 25px; padding: 0; margin-left: 5px;
+      border-radius: 50%; font-size: 12px; line-height: 1; }
 
     .empty { margin-top: 40px; color: #888; text-align: center; }
     @media (max-width: 900px) {

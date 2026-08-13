@@ -4,7 +4,9 @@
 // Run: node tests/pleco.test.mjs
 
 import assert from 'node:assert/strict';
-import { parsePlecoExport, splitHeadword, spacePlecoPinyin } from '../extension/lib/pleco.js';
+import {
+  parsePlecoExport, splitHeadword, spacePlecoPinyin, splitCsvRow,
+} from '../extension/lib/pleco.js';
 
 let passed = 0;
 const failures = [];
@@ -77,6 +79,49 @@ test('a definition containing a tab is kept whole', () => {
 test('the same word twice in one file is one card', () => {
   const { items } = parsePlecoExport('电脑\tdian4nao3\tcomputer\n电脑\tdian4nao3\tcomputer');
   assert.equal(items.length, 1);
+});
+
+// --- CSV export ------------------------------------------------------------
+//
+// Pleco offers tab or comma on the way out and remembers whichever you last
+// picked, so a deck can arrive either way.
+
+test('a CSV row splits on commas, respecting quotes', () => {
+  assert.deepEqual(splitCsvRow('电脑,dian4nao3,computer'), ['电脑', 'dian4nao3', 'computer']);
+  // A definition with a comma in it is quoted by Pleco, and must survive whole.
+  assert.deepEqual(
+    splitCsvRow('电脑,dian4nao3,"noun computer, PC"'),
+    ['电脑', 'dian4nao3', 'noun computer, PC'],
+  );
+  // A doubled quote inside a quoted field is one literal quote.
+  assert.deepEqual(
+    splitCsvRow('电脑,dian4nao3,"a so-called ""PC"""'),
+    ['电脑', 'dian4nao3', 'a so-called "PC"'],
+  );
+  assert.deepEqual(splitCsvRow('电脑'), ['电脑']);
+});
+
+test('a CSV export imports the same as the tab one', () => {
+  const csv = '电脑[電腦],dian4nao3,"noun computer, PC"\n学习[學習],xue2xi2,verb to study';
+  const { items, format } = parsePlecoExport(csv);
+  assert.equal(format, 'text');
+  assert.equal(items.length, 2);
+  assert.deepEqual(items[0], {
+    simp: '电脑', trad: '電腦', pinyin: 'dian4 nao3', defs: 'noun computer, PC',
+  });
+  assert.equal(items[1].trad, '學習');
+});
+
+test('a tab-separated definition containing commas is not split on them', () => {
+  // Why tabs win when a line has both: this row is unambiguous as TSV and
+  // would be torn apart if commas counted as separators too.
+  const { items } = parsePlecoExport('电脑\tdian4nao3\tnoun computer, PC, desktop');
+  assert.equal(items[0].defs, 'noun computer, PC, desktop');
+});
+
+test('a bare word list works whichever separator the file would have used', () => {
+  const { items } = parsePlecoExport('电脑\n学习');
+  assert.deepEqual(items.map((i) => i.simp), ['电脑', '学习']);
 });
 
 // --- XML export ------------------------------------------------------------
