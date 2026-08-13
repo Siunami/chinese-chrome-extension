@@ -3,7 +3,7 @@
 // Literally one chat: it is not per page and not per card. The conversation is
 // stored, so it is the same one whether you opened the drawer on a review card
 // or in the news digest, and the ones before it are in a list you can navigate
-// (the 🕘 button). What you were looking at when you asked travels with the
+// (the clock button). What you were looking at when you asked travels with the
 // question rather than deciding which conversation you are in — which is what
 // it used to do, silently swapping threads as you moved between cards.
 //
@@ -18,10 +18,16 @@
 // disturbs the hoverable spans underneath.
 
 import { DEFAULT_SERVER_URL, aiHeaders, getSyncMeta, newToken } from './sync.js';
+import { icon } from './icons.js';
+import { announceTutor, getAskOpen, onAskOpen, setAskOpen } from './tutorstate.js';
 
 const HIGHLIGHT_NAME = 'tutor-quote';
 const QUOTE_LIMIT = 1200;   // matches the Worker's selection cap
 const MAX_HISTORY = 12;     // turns of the current chat sent to the model
+// How long a conversation stays the one you are in. Within a sitting the chat
+// follows you between pages and survives a reload; come back after a break and
+// the drawer opens on a fresh one, with the old one still under the clock.
+const SITTING_MS = 45 * 60 * 1000;
 const LEGACY_STORE_KEY = 'tutorChats'; // see the cleanup below
 
 const TUTOR_CSS = `
@@ -32,65 +38,129 @@ const TUTOR_CSS = `
     font-size: 15px;
   }
   .tutor[hidden] { display: none !important; }
+  /* Below the navbar, never over it: --tutor-top is the height of the bar on
+     this page, measured when the drawer opens (0 inside the dashboard, where
+     the bar belongs to the parent document). */
   .tutor-drawer {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(370px, 100vw);
+    position: fixed; top: var(--tutor-top, 0px); right: 0; bottom: 0;
+    width: var(--tutor-w, min(370px, 100vw));
     z-index: 2147483646; border-left: 1px solid #ddd5c4;
     box-shadow: -6px 0 26px rgba(60, 48, 24, 0.16);
   }
+  /* The slide belongs to the act of opening it, and to nothing else. Every page
+     builds its own drawer, so animating whenever one appears means replaying
+     the whole thing on every tab you visit with the tutor already open — the
+     drawer is not opening then, it was never shut. The tutor-anim class is put
+     on for the length of one press and taken straight off again. */
+  html.tutor-anim .tutor-drawer {
+    animation: tutor-slide-in 0.2s cubic-bezier(0.3, 0.7, 0.3, 1);
+  }
+  @keyframes tutor-slide-in { from { transform: translateX(100%); } }
+  @media (prefers-reduced-motion: reduce) { html.tutor-anim .tutor-drawer { animation: none; } }
+
+  /* Header. Two rows rather than one: the title and its controls share the
+     first, and the subtitle gets the full width underneath instead of being
+     squeezed into a 200px column beside three buttons and wrapping. */
   .tutor-head {
-    flex: none; display: flex; align-items: flex-start; gap: 8px;
-    padding: 13px 16px 10px; border-bottom: 1px solid #eae4d6;
+    flex: none; display: grid; grid-template-columns: 1fr auto; align-items: center;
+    gap: 1px 8px; padding: 11px 12px 10px; border-bottom: 1px solid #eae4d6;
   }
-  .tutor-head-text { flex: 1; min-width: 0; }
-  .tutor-head b { display: block; font-size: 14px; }
-  .tutor-head span { color: #999; font-size: 11.5px; }
-  .tutor-close, .tutor-icon {
-    flex: none; padding: 2px 7px; border: 1px solid #ddd5c4; border-radius: 7px;
-    background: #fff; color: #777; font: inherit; font-size: 13px; cursor: pointer;
+  .tutor-head b { min-width: 0; font-size: 13.5px; letter-spacing: -0.01em; }
+  .tutor-head-sub {
+    grid-column: 1 / -1; color: #9a9384; font-size: 11.5px; line-height: 1.4;
   }
-  .tutor-close:hover, .tutor-icon:hover { background: #f3efe4; color: #b5232b; }
+  .tutor-head-sub:empty { display: none; }
+  .tutor-actions { display: flex; align-items: center; gap: 2px; }
+
+  /* One control shape for all three. They used to be three bordered pills of
+     three different widths, holding a full-width ＋, a colour emoji clock and a
+     text ✕ — three type systems in 90px. These are bare 15px strokes: no box
+     around them, because the icon is the button; hovering lifts a soft square
+     under it so there is something to aim at.
+   *
+     Every button in here is written ".tutor button.x" rather than ".x". The
+     drawer is injected into pages that style their own controls, and
+     ".zx-app button" in shell.css outranks a lone class — which is exactly how
+     these came to be drawn as bordered white buttons. */
+  .tutor button.tutor-icon {
+    flex: none; width: 28px; height: 28px; display: grid; place-items: center;
+    padding: 0; border: 0; border-radius: 8px;
+    background: none; color: #8a8272; font: inherit; cursor: pointer;
+    transition: background 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
+  }
+  .tutor button.tutor-icon:hover {
+    background: #f2ede0; color: #3f3a2f; box-shadow: 0 1px 3px rgba(60, 48, 24, 0.14);
+  }
+  .tutor button.tutor-icon[aria-pressed="true"] { background: #ece4d0; color: #7f1920; }
+  .tutor button.tutor-close:hover { background: #fae6e4; color: #b5232b; }
+  .tutor-icon svg {
+    display: block; fill: none; stroke: currentColor; stroke-width: 1.5;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .tutor button:focus-visible { outline: 2px solid #b5232b; outline-offset: 1px; }
 
   /* Previous chats. The list takes over the log rather than opening a second
      panel — in 370px, a chat and an index of chats are never both worth
      reading at once. */
-  .tutor-histbar { margin-bottom: 10px; }
-  .tutor-back {
-    padding: 4px 9px; border: 1px solid #e3dbc9; border-radius: 8px;
-    background: #fff; color: #666; font: inherit; font-size: 12px; cursor: pointer;
+  .tutor-histbar {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
   }
-  .tutor-back:hover { border-color: #d0bf98; background: #fffdf3; }
+  .tutor-histbar h3 {
+    flex: 1; margin: 0; color: #a49c8b; font-size: 10.5px; font-weight: 700;
+    letter-spacing: 0.07em; text-transform: uppercase;
+  }
+  .tutor button.tutor-back {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px 4px 7px; border: 1px solid #e3dbc9; border-radius: 999px;
+    background: #fff; color: #6b6555; font: inherit; font-size: 11.5px;
+    font-weight: 600; cursor: pointer;
+  }
+  .tutor button.tutor-back:hover {
+    border-color: #d0bf98; background: #fffdf3; color: #3f3a2f;
+  }
+  .tutor-back svg {
+    fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round;
+    stroke-linejoin: round;
+  }
   .tutor-histlist { display: flex; flex-direction: column; gap: 5px; }
   .tutor-histrow {
-    display: flex; align-items: stretch; gap: 4px; border: 1px solid #e8e1d5;
-    border-radius: 9px; background: #fff;
+    display: flex; align-items: stretch; border: 1px solid #e8e1d5;
+    border-radius: 10px; background: #fff; overflow: hidden;
   }
   .tutor-histrow:hover { border-color: #d0bf98; }
   .tutor-histrow.current { border-color: #c9b08a; background: #fffdf3; }
-  .tutor-histopen {
-    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
-    padding: 8px 10px; border: 0; border-radius: 9px; background: none;
+  .tutor button.tutor-histopen {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;
+    padding: 8px 10px; border: 0; border-radius: 0; background: none;
     font: inherit; text-align: left; cursor: pointer;
   }
+  .tutor button.tutor-histopen:hover { background: none; }
   .tutor-histopen .title {
-    color: #333; font-size: 12.5px; line-height: 1.4;
+    color: #33302a; font-size: 12.5px; line-height: 1.4;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden;
   }
   .tutor-histopen .when { color: #a9a396; font-size: 10.5px; }
-  .tutor-histdel {
-    flex: none; padding: 0 9px; border: 0; border-radius: 0 9px 9px 0;
-    background: none; color: #bbb; font: inherit; font-size: 12px; cursor: pointer;
+  .tutor button.tutor-histdel {
+    flex: none; width: 30px; display: grid; place-items: center;
+    padding: 0; border: 0; border-radius: 0; background: none; color: #c9c3b4;
+    cursor: pointer;
   }
-  .tutor-histdel:hover { background: #fbe4e4; color: #a33; }
-  .tutor-log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; }
+  .tutor-histdel svg {
+    display: block; fill: none; stroke: currentColor; stroke-width: 1.5;
+    stroke-linecap: round;
+  }
+  .tutor button.tutor-histdel:hover { background: #fbe4e4; color: #a33; }
+  .tutor-log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 14px 18px; }
   .tutor .msg { margin-bottom: 12px; font-size: 13.5px; line-height: 1.55; }
+  .tutor .msg:last-child { margin-bottom: 0; }
   .tutor .msg.user { text-align: right; }
   .tutor .msg.user .bubble {
     display: inline-block; max-width: 90%; padding: 7px 11px;
-    border-radius: 12px 12px 3px 12px; background: #ece4d0; text-align: left;
+    border-radius: 13px 13px 4px 13px; background: #ece4d0; text-align: left;
   }
   .tutor .msg.bot .bubble {
-    padding: 9px 12px; border: 1px solid #e8e1d5; border-radius: 12px 12px 12px 3px;
+    padding: 9px 12px; border: 1px solid #e8e1d5; border-radius: 13px 13px 13px 4px;
     background: #fff;
   }
   .tutor .msg.bot .bubble p { margin: 0 0 7px; }
@@ -102,19 +172,87 @@ const TUTOR_CSS = `
   }
   .tutor .msg.err .bubble { border-color: #e2b8b8; background: #fdf4f4; color: #8f1c23; }
   .tutor .thinking { color: #999; font-size: 13px; font-style: italic; }
-  .tutor .starters { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-  .tutor .starter {
-    padding: 7px 10px; border: 1px solid #e3dbc9; border-radius: 9px;
-    background: #fff; color: #555; font: inherit; font-size: 12.5px; text-align: left;
-    line-height: 1.4; cursor: pointer;
+
+  /* The empty state. The suggestions are the only thing to act on, so they get
+     a label of their own rather than trailing a paragraph of grey prose. */
+  .tutor .tutor-empty { color: #75705f; font-size: 12.5px; line-height: 1.6; }
+  .tutor .starters { display: flex; flex-direction: column; gap: 6px; }
+  .tutor .starters-label {
+    margin: 16px 0 7px; color: #a49c8b; font-size: 10.5px; font-weight: 700;
+    letter-spacing: 0.07em; text-transform: uppercase;
   }
-  .tutor .starter:hover { border-color: #d0bf98; background: #fffdf3; }
-  .tutor .tutor-empty { color: #8d8878; font-size: 13px; line-height: 1.55; }
-  .tutor-composer { flex: none; padding: 10px 12px 12px; border-top: 1px solid #eae4d6; }
+  .tutor button.starter {
+    padding: 8px 11px; border: 1px solid #e6dfcf; border-radius: 10px;
+    background: #fff; color: #4d4839; font: inherit; font-size: 12.5px;
+    font-weight: 400; text-align: left; line-height: 1.45; cursor: pointer;
+    transition: border-color 0.12s ease, background 0.12s ease;
+  }
+  .tutor button.starter:hover { border-color: #c9b08a; background: #fffdf3; }
+
+  /* Attached images. They sit above the box you are typing in and lean on it,
+     which is the whole reason they read as "attached to this message" rather
+     than as something already sent — the tray overlaps the field's top edge and
+     the chips tilt alternately, so two of them look tossed onto the pile rather
+     than laid out in a row. Hovering one straightens it and reveals its ✕. */
+  .tutor-tray {
+    position: absolute; left: 6px; right: 6px; bottom: calc(100% - 16px);
+    display: flex; align-items: flex-end; gap: 8px; pointer-events: none;
+  }
+  .tutor-tray:empty { display: none; }
+  .tutor-chip {
+    position: relative; flex: none; pointer-events: auto;
+    opacity: 0; transform: translateY(10px) rotate(var(--tilt, 0deg));
+    transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.3, 0.7, 0.3, 1);
+  }
+  .tutor-chip.in { opacity: 1; transform: translateY(0) rotate(var(--tilt, 0deg)); }
+  .tutor-chip.in:hover { transform: translateY(-2px) rotate(0deg) scale(1.03); z-index: 2; }
+  .tutor-chip.out { opacity: 0; transform: translateY(8px) scale(0.92); }
+  .tutor-chip img {
+    display: block; width: 74px; height: 54px; object-fit: cover;
+    border: 2px solid #fff; border-radius: 9px;
+    box-shadow: 0 2px 8px rgba(60, 48, 24, 0.22);
+  }
+  .tutor .tutor-chip button.drop-shot {
+    position: absolute; top: -6px; right: -6px; width: 18px; height: 18px;
+    display: grid; place-items: center; padding: 0; border: 1.5px solid #fff;
+    border-radius: 999px; background: #b5232b; color: #fff; cursor: pointer;
+    opacity: 0; transform: scale(0.8); transition: opacity 0.12s ease, transform 0.12s ease;
+  }
+  .tutor .tutor-chip button.drop-shot svg { display: block; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+  .tutor-chip:hover button.drop-shot, .tutor .tutor-chip button.drop-shot:focus-visible {
+    opacity: 1; transform: scale(1);
+  }
+  /* Thumbnails of what was sent, kept with the question in the log. */
+  .tutor .msg .shots { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px; }
+  .tutor .msg .shots img {
+    width: 62px; height: 46px; object-fit: cover; border-radius: 7px;
+    border: 1px solid rgba(60, 48, 24, 0.18);
+  }
+
+  /* Composer. One field holding the quoted passage, the question and the send
+     row, so the drawer ends in a single object with a single focus ring rather
+     than three stacked boxes. */
+  .tutor-composer {
+    position: relative; z-index: 1; flex: none; padding: 10px 12px 12px;
+    border-top: 1px solid #eae4d6;
+  }
   .tutor-composer[hidden] { display: none !important; }
+  .tutor-field {
+    position: relative;
+    padding: 7px 8px 8px; border: 1px solid #ddd5c4; border-radius: 12px;
+    background: #fff; transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .tutor-field:focus-within {
+    border-color: #c9b08a; box-shadow: 0 0 0 3px rgba(201, 165, 92, 0.16);
+  }
+  /* Dragging a picture anywhere over the drawer aims at the composer. */
+  .tutor-field.dropping {
+    border-color: #c9a55c; border-style: dashed;
+    box-shadow: 0 0 0 3px rgba(201, 165, 92, 0.2);
+  }
   .tutor .quote-chip {
-    display: flex; align-items: flex-start; gap: 6px; margin-bottom: 7px;
-    padding: 6px 8px; border-left: 2px solid #c9a55c; border-radius: 0 6px 6px 0;
+    display: flex; align-items: flex-start; gap: 6px; margin-bottom: 6px;
+    padding: 5px 7px; border-left: 2px solid #c9a55c; border-radius: 0 6px 6px 0;
     background: rgba(201, 165, 92, 0.15);
   }
   .tutor .quote-chip[hidden] { display: none !important; }
@@ -122,39 +260,57 @@ const TUTOR_CSS = `
     flex: 1; min-width: 0; max-height: 54px; overflow: hidden;
     color: #6d5c34; font-size: 12px; line-height: 1.45;
   }
-  .tutor .quote-chip .drop {
-    flex: none; padding: 0 5px; border: 0; background: transparent;
-    color: #8a7a58; font: inherit; font-size: 14px; line-height: 1.2; cursor: pointer;
+  .tutor .quote-chip button.drop {
+    flex: none; width: 18px; height: 18px; display: grid; place-items: center;
+    padding: 0; border: 0; border-radius: 5px; background: none; color: #8a7a58;
+    cursor: pointer;
+  }
+  .tutor .quote-chip button.drop:hover { background: rgba(201, 165, 92, 0.28); }
+  .tutor .quote-chip .drop svg {
+    display: block; fill: none; stroke: currentColor; stroke-width: 1.6;
+    stroke-linecap: round;
   }
   .tutor textarea {
-    width: 100%; height: 62px; padding: 8px 10px; border: 1px solid #ddd5c4;
-    border-radius: 9px; background: #fff; color: #222; font: inherit;
-    font-size: 13.5px; resize: none;
+    display: block; width: 100%; height: 54px; padding: 2px 3px; border: 0;
+    background: none; color: #222; font: inherit; font-size: 13.5px;
+    line-height: 1.5; resize: none;
   }
-  .tutor textarea:focus { outline: 2px solid #e6d9b2; outline-offset: -1px; }
-  .tutor-row { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
-  .tutor-row .hint { flex: 1; color: #aaa; font-size: 11px; }
-  .tutor .send {
-    padding: 6px 13px; border: 1px solid #c9b08a; border-radius: 8px;
-    background: #fdf6c7; color: #7f1920; font: inherit; font-size: 13px;
+  .tutor textarea:focus { outline: none; }
+  .tutor textarea::placeholder { color: #b0a996; }
+  .tutor-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .tutor-row .hint { flex: 1; color: #b0a996; font-size: 11px; }
+  .tutor button.send {
+    padding: 5px 14px; border: 1px solid #c9b08a; border-radius: 999px;
+    background: #fdf6c7; color: #7f1920; font: inherit; font-size: 12.5px;
     font-weight: 650; cursor: pointer;
   }
-  .tutor .send:disabled { opacity: 0.55; cursor: default; }
+  .tutor button.send:hover:not(:disabled) { background: #fdf0a8; }
+  .tutor button.send:disabled { opacity: 0.45; cursor: default; }
 
-  .tutor-launcher {
-    position: fixed; right: 18px; bottom: 18px; z-index: 2147483645;
-    padding: 9px 16px; border: 1px solid #c9b08a; border-radius: 999px;
-    background: #fdf6c7; color: #7f1920;
-    box-shadow: 0 3px 14px rgba(60, 48, 24, 0.2);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 13px; font-weight: 650; cursor: pointer;
+  /* The drawer takes its space from the page rather than sitting on top of it:
+     the body is padded by the drawer's width, so the content reflows into what
+     is left — a devtools panel, not a sheet over the article. Without it the
+     drawer covers the grade buttons on a small window.
+   *
+     The navbar is the exception. It is where the Ask switch lives, so having it
+     jump left the moment you press it is the one thing that would read as the
+     app coming apart; the negative margin gives it back exactly the width the
+     body gave up, and it sticks to the top so the drawer below it never opens
+     onto a gap. */
+  html.tutor-drawer-open body {
+    padding-right: var(--tutor-w, min(370px, 100vw));
   }
-  .tutor-launcher:hover { background: #fdf0a8; }
-  .tutor-launcher[hidden] { display: none !important; }
-  /* Narrow the document rather than letting the drawer sit on top of it —
-     otherwise it covers the grade buttons on a small window. The drawer is
-     fixed to the viewport, so it stays put. */
-  html.tutor-drawer-open { width: calc(100% - min(370px, 100vw)); }
+  /* Only while the switch is actually being pressed: a page that loads with the
+     drawer already open should be laid out that way, not seen to squeeze into
+     it. */
+  html.tutor-anim body { transition: padding-right 0.2s cubic-bezier(0.3, 0.7, 0.3, 1); }
+  html.tutor-drawer-open .zx-header {
+    position: sticky; top: 0; z-index: 6;
+    margin-right: calc(-1 * var(--tutor-w, min(370px, 100vw)));
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html.tutor-anim body { transition: none; }
+  }
   ::highlight(tutor-quote) {
     background-color: rgba(201, 165, 92, 0.35);
     text-decoration: underline 2px rgba(160, 122, 40, 0.7);
@@ -176,6 +332,16 @@ function el(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+// A header/quote-chip button: an icon, a name for it, and nothing to read.
+function iconButton(className, name, label, size) {
+  const btn = el('button', className);
+  btn.type = 'button';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.append(icon(name, size));
+  return btn;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,10 +367,23 @@ async function loadChats() {
   return Array.isArray(chats) ? chats : [];
 }
 
+// Attached thumbnails are the one thing in here big enough to matter: extension
+// storage is a few megabytes, and 40 chats of them would fill it. The last few
+// keep their pictures — long enough to still be reading the answer — and older
+// messages keep only the words.
+const KEEP_IMAGES = 6;
+
+function prune(messages) {
+  const kept = messages.slice(-MAX_STORED_TURNS);
+  return kept.map((msg, i) => (msg.images && i < kept.length - KEEP_IMAGES
+    ? { ...msg, images: undefined }
+    : msg));
+}
+
 async function writeChat(chat) {
   const chats = await loadChats();
   const rest = chats.filter((c) => c.id !== chat.id);
-  rest.unshift({ ...chat, messages: chat.messages.slice(-MAX_STORED_TURNS) });
+  rest.unshift({ ...chat, messages: prune(chat.messages) });
   await chrome.storage.local.set({ [STORE_KEY]: rest.slice(0, MAX_CHATS) });
 }
 
@@ -239,6 +418,52 @@ function fmtWhen(ts) {
 // Threads written by older builds under a different shape, which nothing reads.
 chrome.storage.local.remove(LEGACY_STORE_KEY).catch(() => {});
 
+// ---------------------------------------------------------------------------
+// Attached images
+//
+// A photo of a menu, a sign, a page of a textbook, or a screenshot of a
+// sentence from somewhere the extension does not run — the questions a learner
+// most wants to ask are often about Chinese that is not on the page. Paste one,
+// drop one, or pick one.
+//
+// Nothing is uploaded anywhere: the picture is shrunk in the page and travels
+// inside the same /api/ask request as the question, on the learner's own key.
+// Shrinking is not an optimisation — a pasted screenshot is several megabytes
+// of retina PNG, which is slower to send than it is to read and is charged for
+// by the pixel.
+// ---------------------------------------------------------------------------
+
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const MAX_SHOTS = 3;      // per question; the Worker enforces the same cap
+const SEND_EDGE = 1120;   // longest side of what the model is shown
+const THUMB_EDGE = 150;   // longest side of what is kept in the conversation
+
+async function drawScaled(blob, edge, type, quality) {
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  return canvas.toDataURL(type, quality);
+}
+
+// -> { mime, data, thumb } | null. `data` is base64 without the data: prefix,
+// which is the shape /api/ask takes; `thumb` is a small data URL kept with the
+// question in the log, because a question about a picture makes no sense
+// afterwards without the picture.
+async function prepareShot(blob) {
+  if (!blob || !IMAGE_TYPES.includes(blob.type)) return null;
+  try {
+    const full = await drawScaled(blob, SEND_EDGE, 'image/jpeg', 0.82);
+    const thumb = await drawScaled(blob, THUMB_EDGE, 'image/jpeg', 0.6);
+    return { mime: 'image/jpeg', data: full.slice(full.indexOf(',') + 1), thumb };
+  } catch {
+    return null; // an image the canvas cannot decode is not worth a dialog
+  }
+}
+
 async function postAsk(meta, payload) {
   const res = await fetch(`${meta.serverUrl.replace(/\/+$/, '')}/api/ask`, {
     method: 'POST',
@@ -254,9 +479,14 @@ async function postAsk(meta, payload) {
 
 // Mount a tutor panel.
 //
+// The control that opens it is not here: it is the Ask switch in the navbar
+// (lib/shell.js), because the tutor is part of the app rather than something
+// hovering over the page it happens to be on. This mounts the panel, says
+// whether the page can be asked about right now, and follows the shared open
+// bit in lib/tutorstate.js.
+//
 //   lookup        a createLookup() instance, so Chinese in answers is hoverable
 //   title/subtitle  panel header
-//   launcher      drawer button label
 //   selectionBar  a createSelectionBar() instance to hang "Ask about this" on;
 //                 omit for no highlight-to-ask. The tutor raises a second bar
 //                 over its own replies, so an answer can be asked about in
@@ -276,7 +506,7 @@ export function createTutor(options) {
     // in the subtitle; the title should not claim the conversation is about
     // this card when it followed you here from the library.
     title = 'Tutor', subtitle = '',
-    launcher = '💬 Ask', selectionBar = null, sectionFor = null,
+    selectionBar = null, sectionFor = null,
     context = () => ({}), starters = () => [], intro = () => '',
     startAvailable = true,
   } = options;
@@ -285,23 +515,20 @@ export function createTutor(options) {
 
   const root = el('aside', 'tutor tutor-drawer');
   const head = el('div', 'tutor-head');
-  const headText = el('div', 'tutor-head-text');
   const titleEl = el('b', null, title);
-  const subtitleEl = el('span', null, subtitle);
-  headText.append(titleEl, subtitleEl);
+  const subtitleEl = el('span', 'tutor-head-sub', subtitle);
 
-  // Two controls, always in the same place: start a fresh chat, or go back
-  // through the ones before it.
-  const newEl = el('button', 'tutor-icon', '＋');
-  newEl.type = 'button';
-  newEl.title = 'Start a new chat';
-  newEl.setAttribute('aria-label', 'Start a new chat');
-  const historyEl = el('button', 'tutor-icon', '🕘');
-  historyEl.type = 'button';
-  historyEl.title = 'Previous chats';
-  historyEl.setAttribute('aria-label', 'Previous chats');
+  // Three controls, always in the same place and always the same shape: start a
+  // fresh chat, go back through the ones before it, put the drawer away.
+  const newEl = iconButton('tutor-icon', 'plus', 'Start a new chat');
+  const historyEl = iconButton('tutor-icon', 'clock', 'Previous chats');
   historyEl.id = 'tutorHistory';
-  head.append(headText, newEl, historyEl);
+  historyEl.setAttribute('aria-pressed', 'false');
+  const closeEl = iconButton('tutor-icon tutor-close', 'close', 'Close the tutor', 14);
+  closeEl.addEventListener('click', () => close());
+  const actions = el('div', 'tutor-actions');
+  actions.append(newEl, historyEl, closeEl);
+  head.append(titleEl, actions, subtitleEl);
 
   const logEl = el('div', 'tutor-log');
   logEl.id = 'chatLog';
@@ -313,11 +540,8 @@ export function createTutor(options) {
   quoteChipEl.hidden = true;
   const quoteTextEl = el('div', 'text');
   quoteTextEl.id = 'quoteText';
-  const quoteDropEl = el('button', 'drop', '✕');
+  const quoteDropEl = iconButton('drop', 'close', 'Stop pointing at this', 11);
   quoteDropEl.id = 'quoteDrop';
-  quoteDropEl.type = 'button';
-  quoteDropEl.title = 'Stop pointing at this';
-  quoteDropEl.setAttribute('aria-label', 'Remove the highlighted passage');
   quoteChipEl.append(quoteTextEl, quoteDropEl);
 
   const questionEl = el('textarea');
@@ -325,34 +549,128 @@ export function createTutor(options) {
   questionEl.rows = 3;
   questionEl.placeholder = 'Ask about a word, a grammar point, or usage…';
   const row = el('div', 'tutor-row');
+  const attachEl = iconButton('tutor-icon', 'image', 'Attach an image', 15);
+  attachEl.id = 'tutorAttach';
+  const fileEl = el('input');
+  fileEl.type = 'file';
+  fileEl.id = 'tutorFile';
+  fileEl.accept = IMAGE_TYPES.join(',');
+  fileEl.multiple = true;
+  fileEl.hidden = true;
   const sendEl = el('button', 'send', 'Ask');
   sendEl.id = 'send';
   sendEl.type = 'submit';
-  row.append(el('span', 'hint', 'Enter to send'), sendEl);
-  composerEl.append(quoteChipEl, questionEl, row);
+  row.append(attachEl, el('span', 'hint', 'Enter to send · paste an image'), sendEl, fileEl);
+  // The quoted passage, the question and the send row are one field: they are
+  // one thing you are composing, and drawing them as three stacked boxes in a
+  // 370px drawer was most of what made the bottom of the panel look busy.
+  // Attached images lean on the top edge of that field, above the tray line.
+  const trayEl = el('div', 'tutor-tray');
+  trayEl.id = 'tutorTray';
+  const fieldEl = el('div', 'tutor-field');
+  fieldEl.append(trayEl, quoteChipEl, questionEl, row);
+  composerEl.append(fieldEl);
 
   root.append(head, logEl, composerEl);
 
-  const closeEl = el('button', 'tutor-close', '✕');
-  closeEl.type = 'button';
-  closeEl.title = 'Close';
-  closeEl.setAttribute('aria-label', 'Close the tutor');
-  closeEl.addEventListener('click', () => close());
-  head.append(closeEl);
   root.hidden = true;
-  const launcherEl = el('button', 'tutor-launcher', launcher);
-  launcherEl.id = 'tutorLauncher';
-  launcherEl.type = 'button';
-  launcherEl.hidden = !startAvailable;
-  launcherEl.addEventListener('click', () => open());
-  document.body.append(launcherEl, root);
+  document.body.append(root);
 
   let chat = newChat();  // the conversation on screen
   let history = chat.messages;
   let quote = null;      // { text, section, context }
+  let shots = [];        // images attached to the question being written
   let busy = false;
   let viewingHistory = false; // the list of past chats is up instead of the log
   let available = startAvailable; // the host page can hide the whole thing
+
+  // -------------------------------------------------------------------------
+  // Attaching images
+  // -------------------------------------------------------------------------
+
+  let shotSeq = 0;
+
+  function dropShot(id) {
+    const chip = trayEl.querySelector(`[data-shot="${id}"]`);
+    shots = shots.filter((s) => s.id !== id);
+    if (!chip) return;
+    chip.classList.remove('in');
+    chip.classList.add('out');
+    chip.addEventListener('transitionend', () => chip.remove(), { once: true });
+    setTimeout(() => chip.remove(), 400); // in case nothing transitions
+    syncSend();
+  }
+
+  function clearShots() {
+    shots = [];
+    trayEl.replaceChildren();
+    syncSend();
+  }
+
+  async function attachShots(blobs) {
+    for (const blob of blobs) {
+      if (shots.length >= MAX_SHOTS) break;
+      const shot = await prepareShot(blob);
+      if (!shot) continue;
+      const id = `s${++shotSeq}`;
+      shots.push({ ...shot, id });
+
+      const chip = el('div', 'tutor-chip');
+      chip.dataset.shot = id;
+      // Alternating lean, so a second picture reads as tossed on top of the
+      // first rather than filed beside it.
+      chip.style.setProperty('--tilt', `${shots.length % 2 ? -4 : 4}deg`);
+      const img = el('img');
+      img.src = shot.thumb;
+      img.alt = 'Attached image';
+      const remove = iconButton('drop-shot', 'close', 'Remove this image', 9);
+      remove.addEventListener('click', () => dropShot(id));
+      chip.append(img, remove);
+      trayEl.append(chip);
+      requestAnimationFrame(() => chip.classList.add('in'));
+      syncSend();
+    }
+    if (shots.length) open();
+  }
+
+  const imagesIn = (transfer) => [...(transfer?.files || [])]
+    .filter((f) => IMAGE_TYPES.includes(f.type));
+
+  // Paste is the point of the whole thing: a screenshot is already on the
+  // clipboard by the time anyone thinks to ask about it. Only when the picture
+  // is the payload — pasting a screenshot alongside copied text should still
+  // paste the text.
+  questionEl.addEventListener('paste', (e) => {
+    const files = imagesIn(e.clipboardData);
+    if (!files.length || e.clipboardData.getData('text/plain').trim()) return;
+    e.preventDefault();
+    attachShots(files);
+  });
+
+  attachEl.addEventListener('click', () => fileEl.click());
+  fileEl.addEventListener('change', () => {
+    attachShots([...fileEl.files].filter((f) => IMAGE_TYPES.includes(f.type)));
+    fileEl.value = ''; // so the same file can be picked again
+  });
+
+  // Dropping anywhere on the drawer aims at the composer; the browser's own
+  // "open this file" would otherwise replace the whole page with the picture.
+  root.addEventListener('dragover', (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    fieldEl.classList.add('dropping');
+  });
+  root.addEventListener('dragleave', (e) => {
+    if (e.relatedTarget && root.contains(e.relatedTarget)) return;
+    fieldEl.classList.remove('dropping');
+  });
+  root.addEventListener('drop', (e) => {
+    const files = imagesIn(e.dataTransfer);
+    fieldEl.classList.remove('dropping');
+    if (!files.length) return;
+    e.preventDefault();
+    attachShots(files);
+  });
 
   // -------------------------------------------------------------------------
   // Pointing at text
@@ -410,9 +728,11 @@ export function createTutor(options) {
     questionEl.focus();
   }
 
+  // One word for one thing: the switch in the navbar, the button under the
+  // question box and this all say Ask, because they all end in the same drawer.
   const askAction = {
     key: 'ask',
-    label: 'Ask about this ↗',
+    label: 'Ask about this',
     title: 'Ask the tutor about the highlighted text',
     prepare: async () => (available ? {} : { hidden: true }),
     run: (picked) => attachQuote(picked),
@@ -431,7 +751,7 @@ export function createTutor(options) {
     root: () => logEl,
     lookup,
   });
-  logBar?.addAction({ ...askAction, label: 'Ask a follow-up ↗' });
+  logBar?.addAction({ ...askAction, label: 'Ask a follow-up' });
 
   quoteDropEl.addEventListener('click', clearQuote);
 
@@ -455,6 +775,18 @@ export function createTutor(options) {
     const wrap = el('div', `msg ${kind}`);
     if (msg.role === 'user') {
       const bubble = el('div', 'bubble');
+      // What was attached stays with the question: "what does this say?" is
+      // unreadable a day later without the picture it was asked about.
+      if (msg.images?.length) {
+        const shelf = el('div', 'shots');
+        for (const src of msg.images) {
+          const img = el('img');
+          img.src = src;
+          img.alt = 'Image attached to this question';
+          shelf.append(img);
+        }
+        bubble.append(shelf);
+      }
       if (msg.quote) bubble.append(el('div', 'quoted', msg.quote));
       bubble.append(el('div', null, msg.content));
       wrap.append(bubble);
@@ -477,9 +809,13 @@ export function createTutor(options) {
     composerEl.hidden = true;
     logEl.replaceChildren();
 
+    historyEl.setAttribute('aria-pressed', 'true');
+
     const bar = el('div', 'tutor-histbar');
-    const back = el('button', 'tutor-back', '← Back to this chat');
+    bar.append(el('h3', null, 'Previous chats'));
+    const back = el('button', 'tutor-back');
     back.type = 'button';
+    back.append(icon('back', 13), el('span', null, 'Back'));
     back.addEventListener('click', () => { viewingHistory = false; renderChat(); });
     bar.append(back);
     logEl.append(bar);
@@ -502,9 +838,7 @@ export function createTutor(options) {
         el('span', 'when', `${fmtWhen(past.at)} · ${past.messages.length} messages`),
       );
       openBtn.addEventListener('click', () => openChat(past));
-      const del = el('button', 'tutor-histdel', '✕');
-      del.type = 'button';
-      del.title = 'Delete this chat';
+      const del = iconButton('tutor-histdel', 'close', 'Delete this chat', 12);
       del.setAttribute('aria-label', `Delete chat: ${chatTitle(past.messages)}`);
       del.addEventListener('click', async () => {
         await deleteChat(past.id);
@@ -545,6 +879,7 @@ export function createTutor(options) {
 
   function renderChat() {
     viewingHistory = false;
+    historyEl.setAttribute('aria-pressed', 'false');
     composerEl.hidden = false;
     logEl.replaceChildren();
     if (!history.length) {
@@ -561,7 +896,9 @@ export function createTutor(options) {
         });
         list.append(btn);
       }
-      if (list.childElementCount) box.append(list);
+      if (list.childElementCount) {
+        box.append(el('div', 'starters-label', 'Try asking'), list);
+      }
       logEl.append(box);
       return;
     }
@@ -609,13 +946,16 @@ export function createTutor(options) {
     const meta = await getSyncMeta();
     if (!meta || !meta.token || !meta.serverUrl) { showSetup(); return; }
 
+    const attached = shots;
     const asked = { role: 'user', content: question };
     if (quote) asked.quote = quote.text;
+    if (attached.length) asked.images = attached.map((s) => s.thumb);
 
     const where = context() || {};
     const payload = {
       question,
       selection: quote?.text || '',
+      images: attached.map((s) => ({ mime: s.mime, data: s.data })),
       context: {
         ...where,
         // A highlighted passage overrides the page's own description of what
@@ -640,6 +980,7 @@ export function createTutor(options) {
     sendEl.disabled = true;
     questionEl.value = '';
     clearQuote();
+    clearShots();
 
     let answer;
     try {
@@ -649,7 +990,7 @@ export function createTutor(options) {
       answer = { role: 'error', content: `Could not answer that: ${err.message}` };
     }
     busy = false;
-    sendEl.disabled = false;
+    syncSend();
     pending?.remove();
     asking.messages.push(answer);
     // A failed question is still worth keeping — it is the one you will want to
@@ -660,9 +1001,21 @@ export function createTutor(options) {
 
   composerEl.addEventListener('submit', (e) => {
     e.preventDefault();
-    const question = questionEl.value.trim();
+    // A picture on its own is already a question: someone who pastes a photo of
+    // a sign and presses Enter is asking what it says. Sending nothing, or
+    // making them type it out, would be the pedantic reading.
+    const question = questionEl.value.trim()
+      || (shots.length ? 'What does this say? Read the Chinese in the image and explain it.' : '');
     if (question) ask(question);
   });
+
+  // Ask is lit only when there is something to ask. The button is the one thing
+  // in the composer that should tell you whether pressing it does anything.
+  function syncSend() {
+    sendEl.disabled = busy || !(questionEl.value.trim() || shots.length);
+  }
+  questionEl.addEventListener('input', syncSend);
+  syncSend();
 
   questionEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -676,25 +1029,62 @@ export function createTutor(options) {
   // Panel lifecycle
   // -------------------------------------------------------------------------
 
-  // Whether the learner wants the drawer up. Kept across subjects so that
-  // reviewing card after card does not mean reopening it every time; only an
-  // explicit close puts it away.
+  // Whether the learner wants the drawer up. It is the shared bit from
+  // lib/tutorstate.js, so it is kept across cards, across pages and across the
+  // dashboard's views: reviewing card after card does not mean reopening it
+  // every time, and only pressing Ask again (or Escape, or ✕) puts it away.
   let wantOpen = false;
+
+  // How much room the drawer takes, and where the navbar ends. Measured rather
+  // than assumed: the bar is 64px on a wide window, shorter on a narrow one,
+  // and absent altogether inside the dashboard's frames.
+  function measure() {
+    const header = document.querySelector('.zx-header');
+    const top = header && header.offsetParent !== null ? header.getBoundingClientRect().height : 0;
+    const style = document.documentElement.style;
+    style.setProperty('--tutor-top', `${Math.round(top)}px`);
+    style.setProperty('--tutor-w', `${Math.min(370, Math.round(window.innerWidth * 0.9))}px`);
+  }
+
+  // The slide is the answer to "you pressed the switch". It is not the answer to
+  // "this page has finished loading and the drawer was already open", which is
+  // what every tab change would otherwise look like — so motion is switched on
+  // for the length of one press and taken off again.
+  let motionTimer = 0;
+  function withMotion() {
+    document.documentElement.classList.add('tutor-anim');
+    clearTimeout(motionTimer);
+    motionTimer = setTimeout(
+      () => document.documentElement.classList.remove('tutor-anim'), 350);
+  }
+
+  function apply(animate = false) {
+    const showing = wantOpen && available;
+    if (showing) measure();
+    if (animate && showing !== !root.hidden) withMotion();
+    root.hidden = !showing;
+    document.documentElement.classList.toggle('tutor-drawer-open', showing);
+  }
 
   function open() {
     wantOpen = true;
-    if (!available) return;
-    root.hidden = false;
-    document.documentElement.classList.add('tutor-drawer-open');
-    launcherEl.hidden = true;
+    apply(true);
+    setAskOpen(true);
   }
 
   function close() {
     wantOpen = false;
-    root.hidden = true;
-    document.documentElement.classList.remove('tutor-drawer-open');
-    launcherEl.hidden = !available;
+    apply(true);
+    setAskOpen(false);
   }
+
+  // Pressed somewhere else: the navbar switch, another page, another view of
+  // the dashboard.
+  onAskOpen((next) => {
+    wantOpen = next;
+    apply(true);
+  });
+  window.addEventListener('resize', () => { if (!root.hidden) measure(); });
 
   // The page has moved to a new card, level or digest. The conversation does
   // not change — it follows you, and each question records where it was asked
@@ -704,36 +1094,39 @@ export function createTutor(options) {
   }
 
   // Whether the tutor makes sense right now (a review card hides it until the
-  // answer is showing, so asking cannot become a way to peek).
+  // answer is showing, so asking cannot become a way to peek). The navbar's Ask
+  // switch says the same thing by going flat, rather than by being pressable
+  // and doing nothing.
   function setAvailable(next) {
     available = !!next;
     if (!available) {
       selectionBar?.hide();
       clearQuote();
-      root.hidden = true;
-      document.documentElement.classList.remove('tutor-drawer-open');
-      launcherEl.hidden = true;
-      return;
     }
-    // Restore whatever the learner last chose, rather than making them reopen
-    // the drawer on every card.
-    if (wantOpen) {
-      root.hidden = false;
-      document.documentElement.classList.add('tutor-drawer-open');
-      launcherEl.hidden = true;
-    } else {
-      launcherEl.hidden = false;
-    }
+    apply();
+    announceTutor(available);
   }
 
-  // Pick up the conversation you were last in, on whichever page you open
-  // next: one chat that follows you is the whole point of unifying it.
+  // The dashboard asking the frame it just switched to for its answer again.
+  window.addEventListener('message', (e) => {
+    if (e.data?.type === 'zx-tutor-ping') announceTutor(available);
+  });
+
+  // Pick up the conversation you were last in — on whichever page you open
+  // next, and only if you are still in the same sitting. Coming back tomorrow
+  // to yesterday's half-finished question, already typed into the box, is not
+  // continuity; it is a stale conversation you have to clear before you can use
+  // the thing. The chat is not lost either way: it is one press of the clock
+  // button away.
   (async () => {
     const [recent] = await loadChats();
-    if (recent?.messages?.length) {
+    if (recent?.messages?.length && Date.now() - (recent.at || 0) < SITTING_MS) {
       chat = { ...recent, messages: [...recent.messages] };
       history = chat.messages;
     }
+    announceTutor(available);
+    wantOpen = await getAskOpen();
+    apply();
     const meta = await getSyncMeta();
     if (viewingHistory) return;
     if (!meta || !meta.token || !meta.serverUrl) showSetup();

@@ -411,9 +411,19 @@ function resolveModel(request, env, what) {
 }
 
 // Turn a system + user prompt into text on whichever provider is configured.
-async function callModel(env, system, prompt) {
+// `images` (optional) are [{ mime, data }] the learner attached to the question.
+async function callModel(env, system, prompt, images = []) {
   const provider = providerConfigured(env);
-  if (provider === 'fal') return callFal(env, system, prompt);
+  // fal-ai/any-llm takes a string prompt and nothing else, so an attachment
+  // cannot be sent there. Saying so in the prompt is better than answering as
+  // if the picture were not there: the model can tell the learner.
+  if (provider === 'fal') {
+    const note = images.length
+      ? `${prompt}\n\n(The learner attached ${images.length === 1 ? 'an image' : `${images.length} images`}, `
+        + 'but this server is configured with a model that cannot see images. Say so briefly.)'
+      : prompt;
+    return callFal(env, system, note);
+  }
   if (provider === 'azure') {
     const base = env.AZURE_OPENAI_ENDPOINT.replace(/\/+$/, '');
     const version = env.AZURE_OPENAI_API_VERSION || 'preview';
@@ -422,25 +432,39 @@ async function callModel(env, system, prompt) {
       url: `${base}/openai/v1/responses?api-version=${version}`,
       headers: { 'api-key': env.AZURE_OPENAI_KEY },
       model: env.AZURE_OPENAI_DEPLOYMENT,
-    }, system, prompt);
+    }, system, prompt, images);
   }
   return callOpenAIText({
     label: 'openai',
     url: 'https://api.openai.com/v1/responses',
     headers: { authorization: `Bearer ${env.OPENAI_API_KEY}` },
     model: env.OPENAI_MODEL || 'gpt-4o',
-  }, system, prompt);
+  }, system, prompt, images);
 }
 
-// OpenAI / Azure OpenAI Responses API, plain text (no tools).
-async function callOpenAIText(cfg, system, user) {
+// OpenAI / Azure OpenAI Responses API, plain text (no tools). With attachments
+// the input becomes one user message of parts, which is the only shape the
+// Responses API takes an image in.
+async function callOpenAIText(cfg, system, user, images = []) {
+  const input = images.length
+    ? [{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: user },
+        ...images.map((img) => ({
+          type: 'input_image',
+          image_url: `data:${img.mime};base64,${img.data}`,
+        })),
+      ],
+    }]
+    : user;
   const res = await fetch(cfg.url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...cfg.headers },
     body: JSON.stringify({
       model: cfg.model,
       instructions: system,
-      input: user,
+      input,
       max_output_tokens: 16000,
     }),
   });
@@ -774,6 +798,7 @@ Rules:
 - For a grammar question: name the pattern, give ONE minimal example sentence, and state the single mistake learners most often make with it.
 - For a vocabulary question: give the meaning, the register (spoken/written/formal), and a near-synonym contrast if one matters.
 - Stay at or near the learner's level. Do not introduce advanced vocabulary to explain a beginner point.
+- If the learner attached an image — a sign, a menu, a screenshot, a page of a book — read the Chinese in it and answer about that. Transcribe the characters you are talking about so they can be looked up, and say plainly if part of it is too blurry or cropped to read rather than guessing at it.
 - Never invent a word, a character, or a usage. If you are not sure, say you are not sure.
 - Plain text only. No markdown, no asterisks, no headings, no numbered lists with special formatting — just sentences and, at most, short lines separated by newlines.`;
 
@@ -810,6 +835,38 @@ function askText(value, max) {
   return typeof value === 'string' ? value.slice(0, max).trim() : '';
 }
 
+// Images the learner attached to the question — a photo of a menu, a sign, a
+// screenshot of a sentence they hit somewhere else. The client shrinks them
+// before sending (a pasted screenshot is easily 4MB), so these caps are a
+// backstop against a caller that does not, not the working size.
+const ASK_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const MAX_ASK_IMAGES = 3;
+const MAX_IMAGE_BASE64 = 1_600_000; // ~1.2MB of pixels each
+
+// Returns { images } or { error } — a bad attachment is worth saying out loud
+// rather than dropping silently, since the learner can see they attached it.
+function askImages(body) {
+  const raw = Array.isArray(body.images) ? body.images : [];
+  if (!raw.length) return { images: [] };
+  if (raw.length > MAX_ASK_IMAGES) {
+    return { error: json({ error: `at most ${MAX_ASK_IMAGES} images per question` }, 400) };
+  }
+  const images = [];
+  for (const item of raw) {
+    const mime = item && typeof item.mime === 'string' ? item.mime.toLowerCase() : '';
+    const data = item && typeof item.data === 'string' ? item.data : '';
+    if (!ASK_IMAGE_TYPES.has(mime)) {
+      return { error: json({ error: `unsupported image type "${mime.slice(0, 40)}"` }, 400) };
+    }
+    if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) {
+      return { error: json({ error: 'image data must be base64' }, 400) };
+    }
+    if (data.length > MAX_IMAGE_BASE64) return { error: json({ error: 'image too large' }, 413) };
+    images.push({ mime, data });
+  }
+  return { images };
+}
+
 // The guide the learner is on, the part they highlighted, and the last few
 // turns — enough for follow-ups like "and the second one?" without shipping
 // the whole conversation every time.
@@ -838,6 +895,12 @@ function buildAskPrompt(body) {
     .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
     .map((m) => `${m.role === 'user' ? 'Learner' : 'You'}: ${m.content.slice(0, MAX_HISTORY_CHARS)}`);
   if (history.length) parts.push(`Earlier in this conversation:\n${history.join('\n')}`);
+  const attachedCount = Array.isArray(body.images) ? body.images.length : 0;
+  if (attachedCount) {
+    parts.push(attachedCount === 1
+      ? 'The learner attached an image with this question; it follows.'
+      : `The learner attached ${attachedCount} images with this question; they follow.`);
+  }
   parts.push(`Question: ${askText(body.question, MAX_QUESTION_CHARS)}`);
   return parts.join('\n\n');
 }
@@ -856,6 +919,8 @@ async function handleAsk(request, env) {
   }
   const question = askText(body.question, MAX_QUESTION_CHARS);
   if (!question) return json({ error: 'missing question' }, 400);
+  const attached = askImages(body);
+  if (attached.error) return attached.error;
 
   const now = Date.now();
   const db = env.DB;
@@ -871,7 +936,7 @@ async function handleAsk(request, env) {
 
   let answer;
   try {
-    answer = await callModel(model.env, ASK_SYSTEM, buildAskPrompt(body));
+    answer = await callModel(model.env, ASK_SYSTEM, buildAskPrompt(body), attached.images);
   } catch (err) {
     console.log(JSON.stringify({ event: 'ask_error', error: String(err && err.message || err) }));
     return json({

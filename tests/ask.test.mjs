@@ -159,6 +159,75 @@ await test('a provider failure surfaces as 502, not a crash', async () => {
   }
 });
 
+// Attached images. The learner pastes a photo of a sign or a screenshot of a
+// sentence the extension does not run on; it has to reach the model as an
+// image, not be quietly dropped on the way.
+const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+await test('an attached image is sent to the model with the question', async () => {
+  const model = stubModel('The sign says 小心地滑 — careful, slippery floor.');
+  try {
+    const res = await worker.fetch(post({
+      question: 'What does this sign say?',
+      images: [{ mime: 'image/png', data: PIXEL }],
+    }, auth), { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.equal(res.status, 200);
+    const { input } = model.seen[0];
+    assert.ok(Array.isArray(input), 'the image did not turn the input into message parts');
+    const parts = input[0].content;
+    assert.equal(parts[0].type, 'input_text');
+    assert.match(parts[0].text, /attached an image/, 'the prompt does not mention the attachment');
+    assert.match(parts[0].text, /Question: What does this sign say\?/);
+    assert.equal(parts[1].type, 'input_image');
+    assert.equal(parts[1].image_url, `data:image/png;base64,${PIXEL}`);
+  } finally {
+    model.restore();
+  }
+});
+
+await test('a question with no image is still sent as plain text', async () => {
+  const model = stubModel('yes');
+  try {
+    await worker.fetch(post({ question: 'why?' }, auth), { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.equal(typeof model.seen[0].input, 'string');
+  } finally {
+    model.restore();
+  }
+});
+
+await test('refuses more images than the cap, an unknown type, and non-base64', async () => {
+  const env = { DB: fakeDb(), OPENAI_API_KEY: 'k' };
+  const four = Array.from({ length: 4 }, () => ({ mime: 'image/png', data: PIXEL }));
+  const tooMany = await worker.fetch(post({ question: 'q', images: four }, auth), env);
+  assert.equal(tooMany.status, 400);
+  assert.match((await tooMany.json()).error, /at most 3 images/);
+
+  const wrongType = await worker.fetch(post({
+    question: 'q', images: [{ mime: 'application/pdf', data: PIXEL }],
+  }, auth), env);
+  assert.equal(wrongType.status, 400);
+  assert.match((await wrongType.json()).error, /unsupported image type/);
+
+  const notBase64 = await worker.fetch(post({
+    question: 'q', images: [{ mime: 'image/png', data: 'data:image/png;base64,oops!' }],
+  }, auth), env);
+  assert.equal(notBase64.status, 400);
+
+  const huge = await worker.fetch(post({
+    question: 'q', images: [{ mime: 'image/jpeg', data: 'A'.repeat(1_600_001) }],
+  }, auth), env);
+  assert.equal(huge.status, 413);
+});
+
+// A refused attachment must not cost the learner one of their forty questions.
+await test('a rejected image is not logged against the hourly cap', async () => {
+  const db = fakeDb();
+  await worker.fetch(post({
+    question: 'q', images: [{ mime: 'image/tiff', data: PIXEL }],
+  }, auth), { DB: db, OPENAI_API_KEY: 'k' });
+  assert.equal(db.countOf('ask'), 0);
+});
+
 await test('oversized input is clamped rather than rejected', async () => {
   const model = stubModel('The 了 here marks a change of state.');
   try {

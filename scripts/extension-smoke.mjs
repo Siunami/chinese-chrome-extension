@@ -574,6 +574,18 @@ async function check(name, fn) {
   }
 }
 
+// The tutor drawer is one switch for the whole profile, so it may already be
+// open when a page arrives — it follows you from the page before. "Open it"
+// therefore means "press the switch unless it is already pressed", not "press
+// the switch", which would close it.
+async function openDrawer(page) {
+  await page.waitFor('!document.getElementById("tutorToggle").disabled', 'the Ask switch');
+  await page.evalJs(`(() => {
+    if (document.querySelector('.tutor').hidden) document.getElementById('tutorToggle').click();
+  })()`);
+  await page.waitFor('!document.querySelector(".tutor").hidden', 'the tutor drawer');
+}
+
 const hover = (selector) => `(() => {
   const t = document.querySelector(${JSON.stringify(selector)});
   if (!t) return false;
@@ -795,26 +807,39 @@ await check('the guides open the tutor as a drawer, not a docked column', async 
     'the docked column is still in the markup');
   assert.equal(await hsk.evalJs('!!document.querySelector(".tutor.tutor-drawer")'), true,
     'no drawer on the guides');
-  // Earlier checks on this page left it open; closing must fall back to the
-  // launcher rather than removing the tutor from the page.
+  // Earlier checks on this page left it open; closing must leave the navbar's
+  // Ask switch un-pressed rather than removing the tutor from the page.
   await hsk.evalJs(`(() => {
     const close = document.querySelector('.tutor-close');
     if (!document.querySelector('.tutor').hidden) close.click();
   })()`);
   await hsk.waitFor('document.querySelector(".tutor").hidden', 'the closed drawer');
-  assert.equal(await hsk.evalJs('document.getElementById("tutorLauncher").hidden'), false,
+  assert.equal(await hsk.evalJs('document.getElementById("tutorToggle").hidden'), false,
     'closing the drawer left no way back into it');
-  await hsk.evalJs('document.getElementById("tutorLauncher").click()');
+  await hsk.waitFor('document.getElementById("tutorToggle").getAttribute("aria-pressed") === "false"',
+    'the switch to come back up');
+  await hsk.evalJs('document.getElementById("tutorToggle").click()');
   await hsk.waitFor('!document.querySelector(".tutor").hidden', 'the drawer');
-  // Right edge, full height — the same panel the other pages slide out.
+  // It slides in; measuring mid-slide reads the transform, not the layout.
+  await hsk.waitFor('document.querySelector(".tutor").getAnimations().length === 0',
+    'the drawer to finish sliding');
+  // The right-hand strip below the navbar, which stays where it is: the drawer
+  // takes its width out of the page, not out of the bar.
   const box = await hsk.evalJs(`(() => {
     const r = document.querySelector('.tutor').getBoundingClientRect();
+    const head = document.querySelector('.zx-header').getBoundingClientRect();
     return { right: Math.round(innerWidth - r.right), top: Math.round(r.top),
-      width: Math.round(r.width) };
+      width: Math.round(r.width), left: Math.round(r.left),
+      headHeight: Math.round(head.height), headRight: Math.round(innerWidth - head.right),
+      bodyRight: Math.round(document.querySelector('.layout').getBoundingClientRect().right) };
   })()`);
   assert.equal(box.right, 0, `drawer is ${box.right}px off the right edge`);
-  assert.equal(box.top, 0, 'drawer does not run full height');
+  assert.equal(box.top, box.headHeight,
+    'the drawer covers the navbar instead of starting under it');
   assert.ok(box.width > 200, `drawer is only ${box.width}px wide`);
+  assert.equal(box.headRight, 0, 'the navbar moved when the drawer opened');
+  assert.ok(box.bodyRight <= box.left + 1,
+    `the page runs to ${box.bodyRight} but the drawer starts at ${box.left}`);
   await hsk.shot('tutor-drawer-guides');
   await hsk.evalJs('document.querySelector(".tutor-close").click()');
 });
@@ -1041,10 +1066,10 @@ await check('a saved word in the library is hoverable', async () => {
 // The library never gates the tutor, so it must be reachable on arrival — it
 // was previously constructed with its launcher hidden and nothing to show it.
 await check('the library offers the tutor without being asked', async () => {
-  assert.equal(await library.evalJs('document.getElementById("tutorLauncher").hidden'), false,
-    'the tutor launcher is hidden on a page that never gates it');
-  await library.evalJs('document.getElementById("tutorLauncher").click()');
-  await library.waitFor('!document.querySelector(".tutor").hidden', 'the tutor drawer');
+  await library.waitFor('!document.getElementById("tutorToggle").hidden', 'the Ask switch');
+  assert.equal(await library.evalJs('document.getElementById("tutorToggle").disabled'), false,
+    'Ask is dead on a page that never gates the tutor');
+  await openDrawer(library);
   await library.waitFor('document.querySelectorAll(".tutor .starter").length > 0',
     'the tutor to populate itself');
 });
@@ -1415,13 +1440,14 @@ await check('the tutor is offered on the answer, never on the question', async (
     touches: 1, srs: null }] })`);
   await review.evalJs('location.reload()');
   await review.waitFor('!!document.querySelector(".card .hanzi .lookup-char")', 'a card');
-  assert.equal(await review.evalJs('document.getElementById("tutorLauncher").hidden'), true,
-    'the tutor was offered before the answer was shown');
+  // The switch stays in the bar and goes flat, rather than vanishing and
+  // reappearing as you grade — but it must not open anything.
+  await review.waitFor('document.getElementById("tutorToggle").disabled',
+    'Ask to go flat on the question side');
 
   await review.evalJs('document.getElementById("reveal").click()');
-  await review.waitFor('!document.getElementById("tutorLauncher").hidden', 'the tutor launcher');
-  await review.evalJs('document.getElementById("tutorLauncher").click()');
-  await review.waitFor('!document.querySelector(".tutor").hidden', 'the tutor drawer');
+  await review.waitFor('!document.getElementById("tutorToggle").disabled', 'the Ask switch');
+  await openDrawer(review);
   assert.equal(await review.evalJs('!!document.getElementById("question")'), true,
     'the drawer has no question box');
 });
@@ -1453,6 +1479,44 @@ await check('the tutor asks the Worker with the card as context', async () => {
   assert.match(asked.context.where, /flashcard/);
   assert.match(asked.context.text, /Word card:|Sentence card:/);
 });
+// Pasting a picture. The questions a learner most wants to ask are often about
+// Chinese the extension cannot reach — a sign, a menu, a screenshot from
+// another app — so the clipboard is the way in.
+await check('a pasted image is attached, shown with the question, and sent', async () => {
+  await review.evalJs(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 40; canvas.height = 30;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#b5232b';
+    ctx.fillRect(0, 0, 40, 30);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    const data = new DataTransfer();
+    data.items.add(new File([blob], 'sign.png', { type: 'image/png' }));
+    document.getElementById('question').dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  })()`);
+  await review.waitFor('document.querySelectorAll(".tutor-tray .tutor-chip img").length === 1',
+    'the pasted image in the tray');
+  // A picture on its own is a question; Ask must be live with an empty box.
+  assert.equal(await review.evalJs('document.getElementById("send").disabled'), false,
+    'Ask stayed dead with an image attached');
+  await review.shot('tutor-image-attached');
+
+  await review.evalJs(`(() => {
+    document.getElementById('question').value = 'What does this say?';
+    document.getElementById('composer').requestSubmit();
+  })()`);
+  await review.waitFor('document.querySelectorAll(".tutor-tray .tutor-chip").length === 0',
+    'the tray to empty on send');
+  await review.waitFor('document.querySelectorAll(".tutor .msg.user .shots img").length > 0',
+    'the image kept with the question');
+  const asked = await (await fetch(`${base}/__lastask`)).json();
+  assert.equal(asked.images?.length, 1, 'the image never reached the request');
+  assert.equal(asked.images[0].mime, 'image/jpeg', 'the image was not shrunk before sending');
+  assert.ok(asked.images[0].data.length > 100, 'the image data is empty');
+  assert.ok(!asked.images[0].data.startsWith('data:'), 'the data: prefix was sent as payload');
+});
+
 // One chat, kept and navigable. It used to be a different thread per card,
 // silently swapped as you moved, so a question asked two cards ago was
 // somewhere you could not get back to.
@@ -1467,8 +1531,7 @@ await check('a chat survives a reload and is the one you come back to', async ()
   await review.waitFor('!window.__stale && !!document.getElementById("reveal")',
     'the reloaded card');
   await review.evalJs('document.getElementById("reveal").click()');
-  await review.waitFor('!document.getElementById("tutorLauncher").hidden', 'the launcher');
-  await review.evalJs('document.getElementById("tutorLauncher").click()');
+  await review.waitFor('!document.getElementById("tutorToggle").disabled', 'the Ask switch');
   await review.waitFor('!document.querySelector(".tutor").hidden', 'the drawer');
   await review.waitFor(
     'document.querySelectorAll(".tutor .msg .bubble").length > 0', 'the restored chat');

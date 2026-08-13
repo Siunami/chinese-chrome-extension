@@ -152,6 +152,28 @@ body.embedded .zx-header { display: none; }
   .zx-script-thumb { transition: none; }
 }
 
+/* Ask. The tutor's switch, and the only control here that changes the shape of
+   the page — so it is a pressed state (like a tab), not a link. It goes flat
+   rather than disappearing on a review card that is still hiding its answer:
+   "not now" is worth saying, and a control that vanishes and comes back as you
+   grade cards makes the bar twitch. */
+.zx-ask {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px 6px 10px; border: 1px solid var(--zx-line); border-radius: 999px;
+  background: var(--zx-surface); color: #6b6555; font: inherit; font-size: 12.5px;
+  font-weight: 650; cursor: pointer;
+}
+.zx-ask svg {
+  fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.zx-app .zx-ask:hover:not(:disabled) { border-color: #d0bf98; background: #fffdf3; color: var(--zx-red-deep); }
+.zx-ask.active, .zx-app .zx-ask.active:hover {
+  border-color: #c9b08a; background: var(--zx-highlight); color: var(--zx-red-deep);
+}
+.zx-app .zx-ask:disabled { opacity: 0.45; cursor: default; }
+.zx-ask:focus-visible { outline: 2px solid var(--zx-red); outline-offset: 2px; }
+
 .zx-settings {
   padding: 6px 10px; border: 1px solid transparent; border-radius: 8px;
   background: none; color: var(--zx-muted); font: inherit; font-size: 12px;
@@ -169,6 +191,9 @@ body.embedded .zx-header { display: none; }
   .zx-brand-text { display: none; }
   .tab { padding: 7px 9px; }
   .zx-script { --zx-script-w: 31px; }
+  /* The word goes, the icon stays: Ask still has to be reachable. */
+  .zx-ask { padding: 6px 9px; }
+  .zx-ask span { display: none; }
 }
 
 /* --- page frame ---------------------------------------------------------- */
@@ -184,9 +209,7 @@ body.zx-app {
 }
 body.zx-app .zx-content {
   flex: 1; width: 100%; max-width: var(--zx-measure);
-  /* The bottom margin clears the tutor's fixed launcher, which otherwise
-     sits on top of the last row of whatever the page is showing. */
-  margin: 22px auto 76px; padding: 26px 28px;
+  margin: 22px auto 40px; padding: 26px 28px;
   border: 1px solid var(--zx-line); border-radius: 13px;
   background: var(--zx-surface); box-shadow: 0 3px 18px rgba(60, 48, 24, 0.07);
 }

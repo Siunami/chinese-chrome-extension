@@ -15,6 +15,8 @@ import { DEFAULT_LIMITS, reviewBadgeCount } from './srs.js';
 import {
   SIMP_FIRST, TRAD_FIRST, getHanziPref, setHanziPref, onHanziPref,
 } from './hanzi.js';
+import { getAskOpen, setAskOpen, onAskOpen, onTutorPresence } from './tutorstate.js';
+import { icon } from './icons.js';
 
 // id -> { label, href, count }. `count` names the badge this tab carries.
 export const VIEWS = [
@@ -49,7 +51,9 @@ async function readCounts() {
  *   onSelect   optional (id) => void. Given, tabs become buttons and call this
  *              instead of navigating — the dashboard's iframe swap.
  *
- * Returns { setActive, refreshCounts }.
+ * Returns { setActive, refreshCounts, setAskAvailable }. The dashboard calls
+ * setAskAvailable for the frame it is showing, since that frame's tutor is in
+ * another document and cannot reach the button itself.
  */
 export function mountShell({ active, onSelect } = {}) {
   // Pages inside the dashboard's iframes still build the bar (so the page is
@@ -174,6 +178,49 @@ export function mountShell({ active, onSelect } = {}) {
   // Every page carries the toggle, so a flip on one has to show on the others.
   onHanziPref(paintScript);
 
+  // Ask. The tutor used to be a pill floating over the bottom-right corner of
+  // whatever you were reading — a second, page-level piece of chrome competing
+  // with the app's own. It is a switch in the bar now: press it and the drawer
+  // takes the right-hand side of the page, press it again and the page has it
+  // back. The bar itself never moves, so the app does not appear to jump every
+  // time you ask something.
+  //
+  // It is one bit for the whole profile (lib/tutorstate.js), which is what makes
+  // the drawer follow you from the review card to the library with the same
+  // conversation still in it.
+  const ask = el('button', 'zx-ask');
+  ask.type = 'button';
+  ask.id = 'tutorToggle';
+  ask.append(icon('chat', 15), el('span', null, 'Ask'));
+  ask.setAttribute('aria-pressed', 'false');
+  // Pages with no tutor at all (Options) never show it; the dashboard's views
+  // all have one, and each frame reports its own as it loads.
+  ask.hidden = !onSelect;
+  let askOpen = false;
+  function paintAsk() {
+    ask.classList.toggle('active', askOpen);
+    ask.setAttribute('aria-pressed', String(askOpen));
+    ask.title = ask.disabled
+      ? 'Reveal the answer before asking about this card'
+      : askOpen ? 'Close the tutor' : 'Ask the tutor about what you are reading';
+  }
+  function setAskAvailable(available) {
+    ask.hidden = false;
+    ask.disabled = !available;
+    paintAsk();
+  }
+  ask.addEventListener('click', () => {
+    askOpen = !askOpen;
+    paintAsk();
+    setAskOpen(askOpen);
+  });
+  getAskOpen().then((open) => { askOpen = open; paintAsk(); });
+  onAskOpen((open) => { askOpen = open; paintAsk(); });
+  // A tutor in this document announces itself directly; inside the dashboard the
+  // drawer is in an iframe, so the frame posts up and newtab.js relays it.
+  onTutorPresence(setAskAvailable);
+  paintAsk();
+
   // Settings is deliberately not a tab: it is a place you visit and come back
   // from, not one of the things you study.
   const settings = el(onSelect ? 'button' : 'a', 'zx-settings', 'Options');
@@ -185,7 +232,7 @@ export function mountShell({ active, onSelect } = {}) {
     settings.href = 'options.html';
   }
 
-  header.append(brand, nav, el('div', 'zx-spacer'), script, settings);
+  header.append(brand, nav, el('div', 'zx-spacer'), script, ask, settings);
   document.body.prepend(header);
 
   function setActive(id) {
@@ -216,5 +263,5 @@ export function mountShell({ active, onSelect } = {}) {
     if (area === 'sync' && (changes.newPerDay || changes.maxPerDay)) refreshCounts();
   });
 
-  return { setActive, refreshCounts };
+  return { setActive, refreshCounts, setAskAvailable };
 }

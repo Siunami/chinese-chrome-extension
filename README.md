@@ -154,11 +154,14 @@ does well that popup dictionaries usually don't: **real example sentences**
   a review card**. It is literally one conversation, not one per page or per
   card: ask about a word in the library, move to review, and you are still in
   the same chat, so your last question is context for the next. Earlier chats
-  are in a list you can navigate (the 🕘 button) and reopen. **Highlight
+  are in a list you can navigate (the clock button) and reopen. **Highlight
   anything and ask about it** — the selection travels with the question, so the
   answer is about that exact text rather than the page in general. On a
   flashcard it also gets the card itself: the word, its reading, the gloss, the
-  example on screen, and how many times you have forgotten it.
+  example on screen, and how many times you have forgotten it. **Ask** is a
+  switch in the navbar and the drawer pushes the page aside rather than covering
+  it; paste a photo of a sign or a menu into the box to ask about Chinese that
+  is not on the screen at all.
   See [Asking questions](#asking-questions).
 - **One app, one navbar** — Review, Library, Guides, News, and Settings all
   wear the same top bar, with live due/saved counts on the tabs that have them.
@@ -321,8 +324,10 @@ against the published HSK figures and the bundled dictionary,
 every sentence of every bundled reading passage, every worked example and every
 vocabulary item really does resolve to one, so no ☆ in a guide is a promise the
 resolver cannot keep — and `tests/ask.test.mjs` drives the real Worker module
-to check the tutor's guards, its rate limit, and that a highlighted passage
-actually reaches the model prompt. `tests/translate.test.mjs` and `tests/translate-sweep.test.mjs` cover the two
+to check the tutor's guards, its rate limit, that a highlighted passage
+actually reaches the model prompt, and that an attached image reaches the model
+as an image — with the type, size and count caps refusing a bad one without
+spending one of the learner's forty questions. `tests/translate.test.mjs` and `tests/translate-sweep.test.mjs` cover the two
 halves of card translation — the endpoint's guards, budget and clamping, and
 the client's decisions about what to send, what to retry, and what to leave
 alone when a request fails. `tests/provider-key.test.mjs` covers the thing that
@@ -353,8 +358,10 @@ sentence beside it, a real drag over a phrase on a web page raises the bar and
 saves it, a drag over a paragraph gets the refusal instead of a card, and a
 drag over English raises nothing at all. It also drives the tutor end to end: the drawer is refused on
 the question side and offered on the answer, typing `1` into the question box
-does not grade the card as Again, and the card's own details reach the request
-the Worker receives. Highlight-to-ask is driven with a real press-drag-release
+does not grade the card as Again, the card's own details reach the request
+the Worker receives, the drawer opens below the navbar and pushes the page
+clear of itself rather than covering it, and a pasted image is attached,
+shrunk, kept with the question and actually sent. Highlight-to-ask is driven with a real press-drag-release
 rather than a scripted selection — a synthetic `Selection` passes even when
 nothing on the page is actually selectable. The popup lives in a closed shadow
 root, so its contents are read through CDP's piercing traversal rather than a
@@ -580,10 +587,31 @@ are looking at changes with the page:
 | Saved library | your collection, plus whichever row you highlighted |
 | A reply | the answer you highlighted, as a follow-up |
 
+**Ask is part of the app bar.** The tutor used to be a pill floating over the
+bottom-right corner of whatever you were reading — a second piece of chrome
+competing with the app's own. It is a switch in the navbar now: press it and the
+drawer takes the right-hand side, press it again and the page has it back. The
+bar itself does not move; the content below it reflows into what is left, the
+way a devtools panel works, so nothing is ever hidden underneath the drawer.
+The switch is one bit for the whole profile, which is why the drawer is still
+open, with the same conversation in it, when you move to another page or another
+dashboard tab.
+
 On a review card the tutor only appears once the answer is showing. Before that
-it would be a way to be told the answer, exactly like the hover popup. Each card
-keeps its own conversation, and the drawer stays open as you work through the
-deck until you close it.
+it would be a way to be told the answer, exactly like the hover popup — the Ask
+switch goes flat rather than disappearing, so the bar does not twitch as you
+grade. The drawer stays open as you work through the deck until you close it.
+
+**Paste a picture.** The Chinese you most want to ask about is often somewhere
+the extension cannot reach: a sign, a menu, a page of a textbook, a screenshot
+from another app. Paste an image into the question box (or drop one on the
+drawer, or pick one with the image button) and it leans on the top edge of the
+composer until you send. An image on its own is a question — pressing Enter with
+an empty box asks what it says. Nothing is uploaded anywhere: the picture is
+shrunk in the page to 1120px on its longest side and travels inside the same
+`/api/ask` request, on your own key, up to three per question. A small
+thumbnail stays with the question in the log, because "what does this say?" is
+unreadable a day later without the picture.
 
 **An answer can be asked about in turn.** The reply that half-lands is exactly
 the thing you want to point at again, so the tutor's own log is selectable too:
@@ -610,10 +638,16 @@ different thread for every card, guide level and digest, swapped out from under
 you as you moved — so a question asked two cards ago was somewhere you could
 not get back to. There is one conversation now; what you were looking at when
 you asked travels with the question instead of deciding which chat you are in.
-The **＋** button starts a fresh one and **🕘** lists the ones before it,
+The **+** button starts a fresh one and the **clock** lists the ones before it,
 newest first, each named after the question that opened it, with a delete
 button. Chats are kept in local storage (40 conversations, 60 messages each;
 the last 12 turns of the current one go to the model as context).
+
+A conversation lasts a sitting. Within 45 minutes it follows you between pages
+and survives a reload; come back after a break and the drawer opens on a fresh
+one, with the old one a single press of the clock away — yesterday's
+half-finished question is not continuity, it is something to clear before you
+can use the thing.
 
 ## Repo layout
 
@@ -651,12 +685,15 @@ extension/          the unpacked extension (load this folder in Chrome)
   news.html/js      AI news digest tab (stretch-level passage from your cards)
   lib/profile.js    learner-profile snapshot sent to /api/news (pure; tested)
   lib/lookup.js     hoverable spans on extension pages -> lib/popup.js
-  lib/tutor.js      THE tutor: chat + /api/ask, and the "Ask about this" action
-                    it contributes to the shared selection bar. Docked beside
-                    the guides, a drawer on review / news / library.
+  lib/tutor.js      THE tutor: the right-edge chat drawer — one conversation,
+                    navigable history, pasted images, the "Ask about this"
+                    action it contributes to the shared selection bar, and the
+                    call to /api/ask
+  lib/tutorstate.js the one bit the navbar and the drawer share: whether the
+                    drawer is open (profile-wide, so it follows you between
+                    pages), and whether this page has a tutor at all
+  lib/icons.js      the app's stroked 16px icons, drawn rather than typed
   hsk.html/js       HSK 1-9 study guides (highlight-to-ask, like every page)
-  lib/tutor.js      the chat drawer: one conversation, navigable history,
-                    highlight-to-ask, and the call to /api/ask
   guides/           the guide content itself, one file per band (no pinyin:
                     readings are generated at display time). Validated by
                     tests/hsk.test.mjs against CC-CEDICT.
