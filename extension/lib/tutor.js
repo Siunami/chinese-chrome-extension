@@ -1,9 +1,14 @@
-// The tutor panel — one chat, mounted wherever a question makes sense.
+// The tutor panel — one chat, on every page, sliding out of the right edge.
 //
-// Same component on every surface: the HSK guides dock it as a sidebar, the
-// review card and the news digest open it as a drawer. It owns its own markup,
-// styling, conversation storage, and the call to the Worker's /api/ask, so a
-// page only has to say WHAT the learner is looking at.
+// Literally one chat: it is not per page and not per card. The conversation is
+// stored, so it is the same one whether you opened the drawer on a review card
+// or in the news digest, and the ones before it are in a list you can navigate
+// (the 🕘 button). What you were looking at when you asked travels with the
+// question rather than deciding which conversation you are in — which is what
+// it used to do, silently swapping threads as you moved between cards.
+//
+// The panel owns its own markup, styling, storage, and the call to the
+// Worker's /api/ask, so a page only has to say WHAT the learner is looking at.
 //
 // Highlight-to-ask comes along with it: highlight text and "Ask about this"
 // appears among the actions on the shared selection bar (lib/savecard.js),
@@ -16,8 +21,7 @@ import { DEFAULT_SERVER_URL, aiHeaders, getSyncMeta, newToken } from './sync.js'
 
 const HIGHLIGHT_NAME = 'tutor-quote';
 const QUOTE_LIMIT = 1200;   // matches the Worker's selection cap
-const MAX_HISTORY = 12;     // turns kept per thread, in memory and on the wire
-const MAX_THREADS = 30;     // conversations retained before the oldest is dropped
+const MAX_HISTORY = 12;     // turns of the current chat sent to the model
 const LEGACY_STORE_KEY = 'tutorChats'; // see the cleanup below
 
 const TUTOR_CSS = `
@@ -28,7 +32,6 @@ const TUTOR_CSS = `
     font-size: 15px;
   }
   .tutor[hidden] { display: none !important; }
-  .tutor-docked { height: 100%; border-left: 1px solid #e6e0d2; }
   .tutor-drawer {
     position: fixed; top: 0; right: 0; bottom: 0; width: min(370px, 100vw);
     z-index: 2147483646; border-left: 1px solid #ddd5c4;
@@ -41,11 +44,44 @@ const TUTOR_CSS = `
   .tutor-head-text { flex: 1; min-width: 0; }
   .tutor-head b { display: block; font-size: 14px; }
   .tutor-head span { color: #999; font-size: 11.5px; }
-  .tutor-close {
+  .tutor-close, .tutor-icon {
     flex: none; padding: 2px 7px; border: 1px solid #ddd5c4; border-radius: 7px;
     background: #fff; color: #777; font: inherit; font-size: 13px; cursor: pointer;
   }
-  .tutor-close:hover { background: #f3efe4; color: #b5232b; }
+  .tutor-close:hover, .tutor-icon:hover { background: #f3efe4; color: #b5232b; }
+
+  /* Previous chats. The list takes over the log rather than opening a second
+     panel — in 370px, a chat and an index of chats are never both worth
+     reading at once. */
+  .tutor-histbar { margin-bottom: 10px; }
+  .tutor-back {
+    padding: 4px 9px; border: 1px solid #e3dbc9; border-radius: 8px;
+    background: #fff; color: #666; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .tutor-back:hover { border-color: #d0bf98; background: #fffdf3; }
+  .tutor-histlist { display: flex; flex-direction: column; gap: 5px; }
+  .tutor-histrow {
+    display: flex; align-items: stretch; gap: 4px; border: 1px solid #e8e1d5;
+    border-radius: 9px; background: #fff;
+  }
+  .tutor-histrow:hover { border-color: #d0bf98; }
+  .tutor-histrow.current { border-color: #c9b08a; background: #fffdf3; }
+  .tutor-histopen {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+    padding: 8px 10px; border: 0; border-radius: 9px; background: none;
+    font: inherit; text-align: left; cursor: pointer;
+  }
+  .tutor-histopen .title {
+    color: #333; font-size: 12.5px; line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .tutor-histopen .when { color: #a9a396; font-size: 10.5px; }
+  .tutor-histdel {
+    flex: none; padding: 0 9px; border: 0; border-radius: 0 9px 9px 0;
+    background: none; color: #bbb; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .tutor-histdel:hover { background: #fbe4e4; color: #a33; }
   .tutor-log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; }
   .tutor .msg { margin-bottom: 12px; font-size: 13.5px; line-height: 1.55; }
   .tutor .msg.user { text-align: right; }
@@ -75,6 +111,7 @@ const TUTOR_CSS = `
   .tutor .starter:hover { border-color: #d0bf98; background: #fffdf3; }
   .tutor .tutor-empty { color: #8d8878; font-size: 13px; line-height: 1.55; }
   .tutor-composer { flex: none; padding: 10px 12px 12px; border-top: 1px solid #eae4d6; }
+  .tutor-composer[hidden] { display: none !important; }
   .tutor .quote-chip {
     display: flex; align-items: flex-start; gap: 6px; margin-bottom: 7px;
     padding: 6px 8px; border-left: 2px solid #c9a55c; border-radius: 0 6px 6px 0;
@@ -141,34 +178,65 @@ function el(tag, className, text) {
   return node;
 }
 
-// Conversations are deliberately per-session. Moving between cards or guide
-// levels still returns you to what you were asking about, because that is one
-// sitting; closing the page ends them. They used to persist to
-// chrome.storage.local, which meant a question asked once was kept
-// indefinitely — for a throwaway "what does this 了 do?" that is a liability,
-// not a feature, and it left the transcript of every study session on disk.
+// ---------------------------------------------------------------------------
+// Conversations
 //
-// One record keyed by thread, pruned to MAX_THREADS, so a long review session
-// cannot grow this without bound either.
-const threads = new Map();
+// One chat, not one per card. The tutor used to open a different thread for
+// every card, guide level and digest, keyed by subject and swapped out from
+// under you as you moved — so a question you asked two cards ago was somewhere
+// you could not get back to. There is one conversation now, it follows you
+// between pages (the store is shared), and the ones before it are in a list
+// you can open. Which card you were on when you asked travels with the
+// question instead of deciding which chat you are in.
+// ---------------------------------------------------------------------------
 
-function loadThread(key) {
-  const messages = threads.get(key);
-  return Array.isArray(messages) ? messages : [];
+const STORE_KEY = 'tutorChatLog';
+const MAX_CHATS = 40;        // conversations kept before the oldest is dropped
+const MAX_STORED_TURNS = 60; // messages retained per conversation
+
+// Everything in one record so pruning is possible: per-chat keys would grow
+// without bound. Newest first, which is also the order the list renders in.
+async function loadChats() {
+  const { [STORE_KEY]: chats } = await chrome.storage.local.get(STORE_KEY);
+  return Array.isArray(chats) ? chats : [];
 }
 
-function saveThread(key, messages) {
-  // Re-inserting moves the key to the end, so Map's insertion order is an LRU
-  // and the oldest conversation is the one dropped.
-  threads.delete(key);
-  threads.set(key, messages.slice(-MAX_HISTORY));
-  for (const stale of [...threads.keys()].slice(0, Math.max(0, threads.size - MAX_THREADS))) {
-    threads.delete(stale);
-  }
+async function writeChat(chat) {
+  const chats = await loadChats();
+  const rest = chats.filter((c) => c.id !== chat.id);
+  rest.unshift({ ...chat, messages: chat.messages.slice(-MAX_STORED_TURNS) });
+  await chrome.storage.local.set({ [STORE_KEY]: rest.slice(0, MAX_CHATS) });
 }
 
-// Chats written by an earlier version are still on disk and nothing reads them
-// now. Drop them once per page rather than leaving old transcripts behind.
+async function deleteChat(id) {
+  const chats = await loadChats();
+  await chrome.storage.local.set({ [STORE_KEY]: chats.filter((c) => c.id !== id) });
+}
+
+// A chat is named after the question that started it — the only label anyone
+// would recognise it by later.
+function chatTitle(messages) {
+  const first = messages.find((m) => m.role === 'user');
+  const text = (first?.content || '').replace(/\s+/g, ' ').trim();
+  return text.length > 60 ? `${text.slice(0, 57)}…` : (text || 'New chat');
+}
+
+function newChat() {
+  return { id: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+    at: Date.now(), messages: [] };
+}
+
+function fmtWhen(ts) {
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return days < 7 ? `${days}d ago` : new Date(ts).toLocaleDateString();
+}
+
+// Threads written by older builds under a different shape, which nothing reads.
 chrome.storage.local.remove(LEGACY_STORE_KEY).catch(() => {});
 
 async function postAsk(meta, payload) {
@@ -186,9 +254,6 @@ async function postAsk(meta, payload) {
 
 // Mount a tutor panel.
 //
-//   mode          'docked' (fills `container`) or 'drawer' (slides over the
-//                 right edge, with a launcher button)
-//   container     required for docked mode
 //   lookup        a createLookup() instance, so Chinese in answers is hoverable
 //   title/subtitle  panel header
 //   launcher      drawer button label
@@ -204,25 +269,39 @@ async function postAsk(meta, payload) {
 //   context       () -> { level?, where?, section?, text? } for the question
 //   starters      () -> [string] suggested opening questions
 //   intro         () -> string shown above the starters
-//   threadKey     () -> string identifying the conversation
 export function createTutor(options) {
   const {
-    mode = 'drawer', container = null, lookup = null,
-    title = 'Ask a question', subtitle = '',
+    lookup = null,
+    // One chat means one name for it. The page says what you are looking at
+    // in the subtitle; the title should not claim the conversation is about
+    // this card when it followed you here from the library.
+    title = 'Tutor', subtitle = '',
     launcher = '💬 Ask', selectionBar = null, sectionFor = null,
     context = () => ({}), starters = () => [], intro = () => '',
-    threadKey = () => 'default', startAvailable = true,
+    startAvailable = true,
   } = options;
 
   injectCss();
 
-  const root = el('aside', `tutor tutor-${mode}`);
+  const root = el('aside', 'tutor tutor-drawer');
   const head = el('div', 'tutor-head');
   const headText = el('div', 'tutor-head-text');
   const titleEl = el('b', null, title);
   const subtitleEl = el('span', null, subtitle);
   headText.append(titleEl, subtitleEl);
-  head.append(headText);
+
+  // Two controls, always in the same place: start a fresh chat, or go back
+  // through the ones before it.
+  const newEl = el('button', 'tutor-icon', '＋');
+  newEl.type = 'button';
+  newEl.title = 'Start a new chat';
+  newEl.setAttribute('aria-label', 'Start a new chat');
+  const historyEl = el('button', 'tutor-icon', '🕘');
+  historyEl.type = 'button';
+  historyEl.title = 'Previous chats';
+  historyEl.setAttribute('aria-label', 'Previous chats');
+  historyEl.id = 'tutorHistory';
+  head.append(headText, newEl, historyEl);
 
   const logEl = el('div', 'tutor-log');
   logEl.id = 'chatLog';
@@ -254,30 +333,25 @@ export function createTutor(options) {
 
   root.append(head, logEl, composerEl);
 
-  let launcherEl = null;
-  if (mode === 'drawer') {
-    const closeEl = el('button', 'tutor-close', '✕');
-    closeEl.type = 'button';
-    closeEl.title = 'Close';
-    closeEl.setAttribute('aria-label', 'Close the tutor');
-    closeEl.addEventListener('click', () => close());
-    head.append(closeEl);
-    root.hidden = true;
-    launcherEl = el('button', 'tutor-launcher', launcher);
-    launcherEl.id = 'tutorLauncher';
-    launcherEl.type = 'button';
-    launcherEl.hidden = !startAvailable;
-    launcherEl.addEventListener('click', () => open());
-    document.body.append(launcherEl);
-    document.body.append(root);
-  } else {
-    (container || document.body).append(root);
-  }
+  const closeEl = el('button', 'tutor-close', '✕');
+  closeEl.type = 'button';
+  closeEl.title = 'Close';
+  closeEl.setAttribute('aria-label', 'Close the tutor');
+  closeEl.addEventListener('click', () => close());
+  head.append(closeEl);
+  root.hidden = true;
+  const launcherEl = el('button', 'tutor-launcher', launcher);
+  launcherEl.id = 'tutorLauncher';
+  launcherEl.type = 'button';
+  launcherEl.hidden = !startAvailable;
+  launcherEl.addEventListener('click', () => open());
+  document.body.append(launcherEl, root);
 
-  let history = [];
+  let chat = newChat();  // the conversation on screen
+  let history = chat.messages;
   let quote = null;      // { text, section, context }
   let busy = false;
-  let currentKey = null;
+  let viewingHistory = false; // the list of past chats is up instead of the log
   let available = startAvailable; // the host page can hide the whole thing
 
   // -------------------------------------------------------------------------
@@ -392,7 +466,86 @@ export function createTutor(options) {
     return wrap;
   }
 
+  // -------------------------------------------------------------------------
+  // Navigating previous chats
+  // -------------------------------------------------------------------------
+
+  // The list replaces the log rather than opening a second panel: the drawer is
+  // 370px, and a chat and an index of chats are never both worth reading.
+  async function renderHistory() {
+    viewingHistory = true;
+    composerEl.hidden = true;
+    logEl.replaceChildren();
+
+    const bar = el('div', 'tutor-histbar');
+    const back = el('button', 'tutor-back', '← Back to this chat');
+    back.type = 'button';
+    back.addEventListener('click', () => { viewingHistory = false; renderChat(); });
+    bar.append(back);
+    logEl.append(bar);
+
+    const chats = (await loadChats()).filter((c) => c.messages?.length);
+    if (!chats.length) {
+      logEl.append(el('div', 'tutor-empty',
+        'No previous chats yet. Questions you ask are kept here so you can come '
+        + 'back to an explanation instead of asking for it twice.'));
+      return;
+    }
+
+    const list = el('div', 'tutor-histlist');
+    for (const past of chats) {
+      const row = el('div', `tutor-histrow${past.id === chat.id ? ' current' : ''}`);
+      const openBtn = el('button', 'tutor-histopen');
+      openBtn.type = 'button';
+      openBtn.append(
+        el('span', 'title', chatTitle(past.messages)),
+        el('span', 'when', `${fmtWhen(past.at)} · ${past.messages.length} messages`),
+      );
+      openBtn.addEventListener('click', () => openChat(past));
+      const del = el('button', 'tutor-histdel', '✕');
+      del.type = 'button';
+      del.title = 'Delete this chat';
+      del.setAttribute('aria-label', `Delete chat: ${chatTitle(past.messages)}`);
+      del.addEventListener('click', async () => {
+        await deleteChat(past.id);
+        // Deleting the chat you are in leaves you in a fresh one rather than
+        // still typing into something that no longer exists.
+        if (past.id === chat.id) { chat = newChat(); history = chat.messages; }
+        renderHistory();
+      });
+      row.append(openBtn, del);
+      list.append(row);
+    }
+    logEl.append(list);
+  }
+
+  function openChat(past) {
+    chat = { ...past, messages: [...past.messages] };
+    history = chat.messages;
+    viewingHistory = false;
+    clearQuote();
+    renderChat();
+    questionEl.focus();
+  }
+
+  function startNewChat() {
+    // An empty chat was never written, so there is nothing to leave behind.
+    chat = newChat();
+    history = chat.messages;
+    viewingHistory = false;
+    clearQuote();
+    renderChat();
+    questionEl.focus();
+  }
+
+  newEl.addEventListener('click', startNewChat);
+  historyEl.addEventListener('click', () => {
+    if (viewingHistory) { viewingHistory = false; renderChat(); } else renderHistory();
+  });
+
   function renderChat() {
+    viewingHistory = false;
+    composerEl.hidden = false;
     logEl.replaceChildren();
     if (!history.length) {
       const box = el('div', 'tutor-empty');
@@ -476,10 +629,13 @@ export function createTutor(options) {
         .map((m) => ({ role: m.role, content: m.content })),
     };
 
-    const key = currentKey;
-    history.push(asked);
-    renderChat();
-    const pending = showThinking();
+    // The learner may open a past chat, or start a new one, while the model is
+    // thinking. The answer belongs to the conversation it was asked in.
+    const asking = chat;
+    asking.messages.push(asked);
+    asking.at = Date.now();
+    if (chat === asking && !viewingHistory) renderChat();
+    const pending = chat === asking && !viewingHistory ? showThinking() : null;
     busy = true;
     sendEl.disabled = true;
     questionEl.value = '';
@@ -494,18 +650,12 @@ export function createTutor(options) {
     }
     busy = false;
     sendEl.disabled = false;
-    pending.remove();
-    // The card (or level) may have changed while the model was thinking; the
-    // answer belongs to the thread it was asked in, not to whatever is on
-    // screen now.
-    if (key !== currentKey) {
-      saveThread(key, [...history, answer]);
-      return;
-    }
-    history.push(answer);
-    history = history.slice(-MAX_HISTORY);
-    renderChat();
-    saveThread(key, history);
+    pending?.remove();
+    asking.messages.push(answer);
+    // A failed question is still worth keeping — it is the one you will want to
+    // retry — but it should not be what the chat is named after.
+    await writeChat(asking);
+    if (chat === asking && !viewingHistory) renderChat();
   }
 
   composerEl.addEventListener('submit', (e) => {
@@ -519,7 +669,7 @@ export function createTutor(options) {
       e.preventDefault();
       composerEl.requestSubmit();
     }
-    if (e.key === 'Escape' && mode === 'drawer') close();
+    if (e.key === 'Escape') close();
   });
 
   // -------------------------------------------------------------------------
@@ -532,34 +682,25 @@ export function createTutor(options) {
   let wantOpen = false;
 
   function open() {
-    if (mode !== 'drawer') return;
     wantOpen = true;
     if (!available) return;
     root.hidden = false;
     document.documentElement.classList.add('tutor-drawer-open');
-    if (launcherEl) launcherEl.hidden = true;
+    launcherEl.hidden = true;
   }
 
   function close() {
-    if (mode !== 'drawer') return;
     wantOpen = false;
     root.hidden = true;
     document.documentElement.classList.remove('tutor-drawer-open');
-    if (launcherEl) launcherEl.hidden = !available;
+    launcherEl.hidden = !available;
   }
 
-  // Point the panel at a new subject: loads that conversation, drops any quote
-  // left over from the previous one.
-  async function setThread() {
-    const key = threadKey();
-    if (key === currentKey) return;
-    currentKey = key;
+  // The page has moved to a new card, level or digest. The conversation does
+  // not change — it follows you, and each question records where it was asked
+  // — but a quote pointing into the page that just went away is stale.
+  function setThread() {
     clearQuote();
-    history = loadThread(key);
-    const meta = await getSyncMeta();
-    if (key !== currentKey) return;
-    if (!meta || !meta.token || !meta.serverUrl) showSetup();
-    else renderChat();
   }
 
   // Whether the tutor makes sense right now (a review card hides it until the
@@ -570,14 +711,8 @@ export function createTutor(options) {
       selectionBar?.hide();
       clearQuote();
       root.hidden = true;
-      if (mode === 'drawer') {
-        document.documentElement.classList.remove('tutor-drawer-open');
-        if (launcherEl) launcherEl.hidden = true;
-      }
-      return;
-    }
-    if (mode !== 'drawer') {
-      root.hidden = false;
+      document.documentElement.classList.remove('tutor-drawer-open');
+      launcherEl.hidden = true;
       return;
     }
     // Restore whatever the learner last chose, rather than making them reopen
@@ -585,16 +720,25 @@ export function createTutor(options) {
     if (wantOpen) {
       root.hidden = false;
       document.documentElement.classList.add('tutor-drawer-open');
-      if (launcherEl) launcherEl.hidden = true;
-    } else if (launcherEl) {
+      launcherEl.hidden = true;
+    } else {
       launcherEl.hidden = false;
     }
   }
 
-  // Populate the log without the page having to ask. A tutor that never
-  // switches subject — the library's — would otherwise sit empty forever,
-  // showing neither its starter questions nor the "enable the tutor" prompt.
-  setThread();
+  // Pick up the conversation you were last in, on whichever page you open
+  // next: one chat that follows you is the whole point of unifying it.
+  (async () => {
+    const [recent] = await loadChats();
+    if (recent?.messages?.length) {
+      chat = { ...recent, messages: [...recent.messages] };
+      history = chat.messages;
+    }
+    const meta = await getSyncMeta();
+    if (viewingHistory) return;
+    if (!meta || !meta.token || !meta.serverUrl) showSetup();
+    else renderChat();
+  })();
 
   return {
     root,
@@ -602,6 +746,8 @@ export function createTutor(options) {
     close,
     setThread,
     setAvailable,
+    newChat: startNewChat,
+    showHistory: renderHistory,
     refresh: renderChat,
     isOpen: () => !root.hidden,
     // True while the selection bar is up. Hover lookups are suppressed then,

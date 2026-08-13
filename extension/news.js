@@ -44,11 +44,8 @@ const selectionBar = createSelectionBar({ root: () => appEl, lookup });
 let digest = null; // the digest currently rendered, for the tutor's context
 
 const tutor = createTutor({
-  mode: 'drawer',
   lookup,
-  title: 'Ask about this passage',
   subtitle: 'Highlight any part of the article to ask about it',
-  launcher: '💬 Ask about this passage',
   selectionBar,
   sectionFor: () => ({
     section: 'News passage',
@@ -59,7 +56,6 @@ const tutor = createTutor({
     section: 'News passage',
     text: [digest?.title, digest?.article].filter(Boolean).join('\n\n').slice(0, 4000),
   }),
-  threadKey: () => `news:${digest?.title || 'none'}`,
   startAvailable: false, // nothing to ask about until a digest exists
   intro: () => 'Ask about anything in the passage — a word you half-recognise, a '
     + 'sentence that will not parse, or why the writer chose one phrasing over '

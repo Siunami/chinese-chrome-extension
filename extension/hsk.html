@@ -126,13 +126,8 @@
     .speak { width: 25px; height: 25px; padding: 0; margin-left: 5px;
       border-radius: 50%; font-size: 12px; line-height: 1; vertical-align: middle; }
 
-    /* The tutor panel is lib/tutor.js; this is just the column it sits in. */
-    .chat-slot { flex: none; width: 336px; min-height: 0; display: flex; }
-    .chat-slot > .tutor { flex: 1; min-width: 0; }
-
     .empty { margin-top: 40px; color: #888; text-align: center; }
     @media (max-width: 900px) {
-      .chat-slot { width: 280px; }
       .rail { width: 108px; }
       .guide { padding: 16px 18px 50px; }
     }
@@ -142,9 +137,6 @@
   <div class="layout">
     <nav class="rail" id="rail" aria-label="HSK levels"></nav>
     <main class="guide" id="guide"></main>
-    <!-- lib/tutor.js mounts the panel here (docked); the same component opens
-         as a drawer on the review card and the news digest. -->
-    <div class="chat-slot" id="tutorSlot"></div>
   </div>
 
   <!-- The universal popup is a classic script (shared verbatim with the

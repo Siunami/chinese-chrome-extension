@@ -125,15 +125,19 @@ does well that popup dictionaries usually don't: **real example sentences**
   time rather than one paragraph at a time. Stars you have already used stay
   lit, so a level shows at a glance what of it is in your deck.
   See [HSK study guides](#hsk-study-guides).
-- **One tutor, wherever you get stuck** — a dictionary entry tells you what a
-  word means, not when a native speaker would reach for it. So the same chat
-  panel is mounted on every surface that has Chinese on it: docked beside the
-  study guides, and a drawer on the **answer side of a review card**, the news
-  passage, and your saved library. **Highlight anything and ask about it** —
-  the selection travels with the question, so the answer is about that exact
-  text rather than the page in general. On a flashcard it also gets the card
-  itself: the word, its reading, the gloss, the example sentence on screen, and
-  how many times you have forgotten it. See [Asking questions](#asking-questions).
+- **One tutor, one chat, every page** — a dictionary entry tells you what a
+  word means, not when a native speaker would reach for it. The same panel
+  slides out of the right edge of every surface that has Chinese on it: the
+  study guides, the news passage, your saved library, and the **answer side of
+  a review card**. It is literally one conversation, not one per page or per
+  card: ask about a word in the library, move to review, and you are still in
+  the same chat, so your last question is context for the next. Earlier chats
+  are in a list you can navigate (the 🕘 button) and reopen. **Highlight
+  anything and ask about it** — the selection travels with the question, so the
+  answer is about that exact text rather than the page in general. On a
+  flashcard it also gets the card itself: the word, its reading, the gloss, the
+  example on screen, and how many times you have forgotten it.
+  See [Asking questions](#asking-questions).
 - **One app, one navbar** — Review, Library, Guides, News, and Settings all
   wear the same top bar, with live due/saved counts on the tabs that have them.
   It is a single component (`extension/lib/shell.js` + `extension/shell.css`)
@@ -471,8 +475,9 @@ with the guide's own English on the back.
 
 ### Asking about the guide
 
-The tutor is docked beside the guides. Select any part of one — a sentence in
-the passage, a grammar box, a single word — and a bar appears offering
+The tutor slides out of the right edge, as it does everywhere else. Select any
+part of a guide — a sentence in the passage, a grammar box, a single word — and
+a bar appears offering
 **Ask about this** (beside **☆ Save**); clicking it points the question at that
 exact text. See [Asking questions](#asking-questions) for how it works
 everywhere else.
@@ -541,17 +546,17 @@ the reason the tutor stops answering.
 A dictionary tells you what a word means. It does not tell you when a native
 speaker would actually reach for it, why the example sentence is built the way
 it is, or how the word differs from the near synonym you already know. That is
-what the tutor is for, and it is the same component in every place it appears
-(`extension/lib/tutor.js`) — only the description of what you are looking at
-changes:
+what the tutor is for. It is one component (`extension/lib/tutor.js`), one
+right-edge drawer, and **one conversation** — only the description of what you
+are looking at changes with the page:
 
-| Where | How it appears | What it knows |
-| --- | --- | --- |
-| HSK guides | docked sidebar | the level, and the section you highlighted in |
-| Review card | drawer, **after** you reveal | the card, its reading, gloss, the example on screen, and how often you have forgotten it |
-| News digest | drawer | the passage you are reading |
-| Saved library | drawer | your collection, plus whichever row you highlighted |
-| A reply | the tutor's own log | the answer you highlighted, as a follow-up |
+| Where | What it knows |
+| --- | --- |
+| HSK guides | the level, and the section you highlighted in |
+| Review card | the card, its reading, gloss, the example on screen, and how often you have forgotten it — **after** you reveal |
+| News digest | the passage you are reading |
+| Saved library | your collection, plus whichever row you highlighted |
+| A reply | the answer you highlighted, as a follow-up |
 
 On a review card the tutor only appears once the answer is showing. Before that
 it would be a way to be told the answer, exactly like the hover popup. Each card
@@ -578,12 +583,15 @@ nothing extra to set up if news already works. It is capped at 40 questions per
 hour per user. Every page works fully without a Worker; only the tutor needs
 one.
 
-**Conversations are a sitting, not a record.** They live in memory (12 turns
-each, 30 most recent threads), so moving between cards or guide levels returns
-you to what you were asking about, and closing the page ends it. Nothing is
-written to disk: a throwaway "what does this 了 do?" is not worth keeping
-forever, and the alternative left a transcript of every study session in local
-storage. An older build did persist them; the tutor deletes that key on load.
+**One chat, and a history you can navigate.** The tutor used to open a
+different thread for every card, guide level and digest, swapped out from under
+you as you moved — so a question asked two cards ago was somewhere you could
+not get back to. There is one conversation now; what you were looking at when
+you asked travels with the question instead of deciding which chat you are in.
+The **＋** button starts a fresh one and **🕘** lists the ones before it,
+newest first, each named after the question that opened it, with a delete
+button. Chats are kept in local storage (40 conversations, 60 messages each;
+the last 12 turns of the current one go to the model as context).
 
 ## Repo layout
 
@@ -624,7 +632,9 @@ extension/          the unpacked extension (load this folder in Chrome)
   lib/tutor.js      THE tutor: chat + /api/ask, and the "Ask about this" action
                     it contributes to the shared selection bar. Docked beside
                     the guides, a drawer on review / news / library.
-  hsk.html/js       HSK 1-9 study guides + highlight-to-ask tutor sidebar
+  hsk.html/js       HSK 1-9 study guides (highlight-to-ask, like every page)
+  lib/tutor.js      the chat drawer: one conversation, navigable history,
+                    highlight-to-ask, and the call to /api/ask
   guides/           the guide content itself, one file per band (no pinyin:
                     readings are generated at display time). Validated by
                     tests/hsk.test.mjs against CC-CEDICT.

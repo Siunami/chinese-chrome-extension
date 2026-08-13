@@ -94,11 +94,8 @@ function cardBrief() {
 // showing: before that, asking about the card would just be a way to be told
 // the answer.
 const tutor = createTutor({
-  mode: 'drawer',
   lookup,
-  title: 'Ask about this card',
-  subtitle: 'Usage, nuance, why it works that way',
-  launcher: '💬 Ask about this card',
+  subtitle: 'Highlight anything on the card to ask about it',
   selectionBar,
   sectionFor: () => ({ section: 'Flashcard', text: cardBrief() }),
   context: () => ({
@@ -106,7 +103,6 @@ const tutor = createTutor({
     section: current?.cardType === 'sentence' ? 'Sentence card' : 'Word card',
     text: cardBrief(),
   }),
-  threadKey: () => (current ? `card:${cardKey(current)}` : 'card:none'),
   startAvailable: false, // earned by revealing the answer / having a passage
   intro: () => (current
     ? `Confused about ${current.simp}? Ask how it is actually used, how it differs `
