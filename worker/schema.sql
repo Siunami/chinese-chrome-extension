@@ -39,11 +39,12 @@ CREATE TABLE IF NOT EXISTS news (
   created_at INTEGER NOT NULL
 );
 
--- Per-user hourly cap on the model-backed endpoints (/api/ask, /api/translate),
--- one row per call, pruned by the daily cron. `kind` keeps each endpoint's
--- budget separate. The Worker creates this itself on first use, so a
--- deployment made before these endpoints existed keeps working without
--- re-running this file.
+-- Per-user hourly cap on the rate-limited endpoints — the model-backed ones
+-- (/api/ask, /api/translate, /api/news, /api/placement) and /api/sync, whose
+-- cost is D1 itself rather than a model call. One row per call, pruned by the
+-- daily cron. `kind` keeps each endpoint's budget separate. The Worker creates
+-- this itself on first use, so a deployment made before these endpoints
+-- existed keeps working without re-running this file.
 DROP TABLE IF EXISTS ask_log;
 CREATE TABLE IF NOT EXISTS usage_log (
   user_id INTEGER NOT NULL,

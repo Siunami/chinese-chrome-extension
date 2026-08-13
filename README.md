@@ -367,6 +367,25 @@ person pairing with your Worker, you can drop `REQUIRE_USER_KEY` from
 `wrangler.jsonc` and put the model key in `wrangler secret` instead of the
 options page — see [AI news digest](#ai-news-digest).
 
+**What a shared Worker is protected by.** `REQUIRE_USER_KEY` settles the model
+bill — every AI call runs on the caller's own key — but D1 is still yours, and
+`/api/sync` has no model call behind it to make a caller think twice. So there
+are two limits underneath it. A pairing token self-provisions a user on first
+sight, capped at ten new pairings per hour per client address; addresses are
+bucketed to a /64 on IPv6, because a v6 client is normally handed a whole /64
+and counting full addresses would let one of them present as 2^64 strangers.
+And each token gets 1200 syncs an hour — far above the heaviest real hour (a
+long review session pushes every few seconds) and far below what it takes to
+make a dent in a D1 quota. Clients treat a 429 as a retriable no-op, so a
+learner who somehow hits either one loses nothing but a delay.
+
+Both are application-level limits, which means they cost a D1 round trip to
+enforce. If you are running a deployment anyone can find and want the cheap
+version of this, add a Cloudflare **Rate Limiting** rule on `/api/*` in the
+dashboard: that one runs at the edge, before your Worker is invoked at all, and
+is the right tool for volumetric abuse. The limits here are what keeps a single
+*paired* client honest.
+
 **Pair:** open the extension options page, click **Enable phone sync** (the
 default server URL is prefilled), and scan the QR code with your phone's
 camera. The app opens already paired; add it to your home screen for
@@ -502,6 +521,15 @@ makes a shared deployment safe to hand to other people: that a caller's key is
 what reaches the provider, that it replaces the Worker's own credentials rather
 than merging with them, and that with `REQUIRE_USER_KEY` set a keyless request
 is refused even though the Worker has a usable key of its own.
+`tests/sync-limits.test.mjs` covers the other half of that — the model calls are
+paid for by whoever makes them, but D1 is still the owner's, so it checks the
+two limits that keep one caller from grinding a shared deployment flat: that the
+hourly sync budget is per token and per hour rather than global, and that the
+cap on new pairings survives IPv6. The second is the one worth having a test
+for: a v6 client holds a whole /64, so counting whole addresses let it rotate
+its way past a cap that still looked like it was working, and the test pins the
+grouping — every address in a /64 is one bucket, however the address is spelled,
+while a mapped IPv4 address stays one client rather than becoming a network.
 `tests/backup.test.mjs` covers the file a learner falls back on after Chrome has
 thrown their progress away: that a dump of storage really does carry keys this
 code has never heard of, that the two transient keys and (on request) the two

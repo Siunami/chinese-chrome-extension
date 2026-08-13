@@ -18,6 +18,23 @@ const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const NEW_USERS_PER_IP_PER_HOUR = 10;
 const SQL_CHUNK = 50; // stay well under D1's bound-parameter limit
 
+// /api/sync has no model call behind it, so nothing here spends the caller's
+// money — but every call is D1 reads and writes on the Worker OWNER's account,
+// and a pairing token self-provisions on first sight. Without a ceiling one
+// token can grind the deployment's D1 quota flat and take every other
+// learner's sync down with it, which is the cheapest way to break a shared
+// deployment from the outside.
+//
+// Set well clear of honest use rather than close to it. The heaviest real hour
+// is a long review session on the phone, where each grade schedules a push a
+// few seconds out (pwa/app.js) on top of a 60s poll, plus the extension's own
+// 30s debounce and 30min alarm on the same token — a few hundred calls at the
+// very top end. A client above this is malfunctioning or hostile, and the
+// answer is the same either way: come back later. Clients treat any non-2xx as
+// a retriable no-op (they don't advance their cursor), so a 429 costs a
+// learner nothing but a delay.
+const SYNC_PER_HOUR = 1200;
+
 // /api/news: read current news — on the topics the learner is studying, or on
 // a topic they searched for — and write them an original Mandarin passage at
 // their level. Grounding is Google News RSS gathered here for every provider
@@ -126,20 +143,51 @@ function validCard(doc) {
   return JSON.stringify(doc).length <= MAX_DOC_BYTES;
 }
 
+// The address a new pairing is counted against.
+//
+// An IPv4 client is one address and counts as itself. An IPv6 client is
+// normally handed a whole /64 — 2^64 addresses it can source from freely — so
+// counting full v6 addresses made NEW_USERS_PER_IP_PER_HOUR an IPv4-only
+// speed bump: rotate the low half and every request looks like a new address.
+// Bucket v6 down to its /64 (the first four hextets) so the cap means the same
+// thing on both protocols.
+//
+// Hextets are normalized (lowercased, leading zeros stripped) so one client
+// always produces one bucket string whatever form the address arrives in. Rows
+// written before this existed hold a full address; they simply stop matching,
+// which restarts the hourly counter once and loses nothing.
+export function ipBucket(ip) {
+  const addr = String(ip || '').trim().toLowerCase().split('%')[0];
+  if (!addr) return 'unknown';
+  // No colon is IPv4 or 'unknown'; a dot alongside colons is an IPv4-mapped
+  // form (::ffff:1.2.3.4). Both identify a single client already.
+  if (!addr.includes(':') || addr.includes('.')) return addr;
+  const [head, tail] = addr.split('::');
+  const left = head.split(':').filter(Boolean);
+  const right = tail === undefined ? [] : tail.split(':').filter(Boolean);
+  // '::' stands for however many all-zero hextets are needed to reach 8.
+  const zeros = tail === undefined ? 0 : Math.max(0, 8 - left.length - right.length);
+  const hextets = [...left, ...Array(zeros).fill('0'), ...right];
+  // Suffixed so a bucket can never collide with a literal address, and so the
+  // stored value says plainly what it is.
+  return `${hextets.slice(0, 4).map((h) => h.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}
+
 async function getUser(db, tokenHash, ip, now) {
   const user = await db
     .prepare('SELECT id, version FROM users WHERE token_hash = ?')
     .bind(tokenHash)
     .first();
   if (user) return user;
+  const bucket = ipBucket(ip);
   const { recent } = await db
     .prepare('SELECT COUNT(*) AS recent FROM users WHERE created_ip = ? AND created_at > ?')
-    .bind(ip, now - 60 * 60 * 1000)
+    .bind(bucket, now - 60 * 60 * 1000)
     .first();
   if (recent >= NEW_USERS_PER_IP_PER_HOUR) return null;
   await db
     .prepare('INSERT INTO users (token_hash, version, created_at, last_seen_at, created_ip) VALUES (?, 0, ?, ?, ?)')
-    .bind(tokenHash, now, now, ip)
+    .bind(tokenHash, now, now, bucket)
     .run();
   return db.prepare('SELECT id, version FROM users WHERE token_hash = ?').bind(tokenHash).first();
 }
@@ -212,6 +260,15 @@ async function handleSync(request, env) {
   const ip = request.headers.get('cf-connecting-ip') || 'unknown';
   const user = await getUser(db, await sha256Hex(token), ip, now);
   if (!user) return json({ error: 'too many new pairings from this address; try later' }, 429);
+
+  await ensureUsageLog(db);
+  if (await usageLastHour(db, user.id, 'sync', now) >= SYNC_PER_HOUR) {
+    return json({ error: `sync limit reached (${SYNC_PER_HOUR} per hour); try again later` }, 429);
+  }
+  // Counted on arrival, unlike the model-backed endpoints, which count on
+  // success. What this cap bounds is the D1 work below — a call that goes on
+  // to fail has already spent it, so not counting it would leave the hole open.
+  await recordUsage(db, user.id, 'sync', now);
 
   const docs = new Map(); // card_key -> validated incoming doc
   for (const raw of incoming) {
