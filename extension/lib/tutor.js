@@ -20,6 +20,8 @@
 import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './sync.js';
 import { postAi } from './aistatus.js';
 import { icon } from './icons.js';
+import { buildProfile } from './profile.js';
+import { RESULTS_KEY } from './placement.js';
 import { announceTutor, getAskOpen, onAskOpen, setAskOpen } from './tutorstate.js';
 
 const HIGHLIGHT_NAME = 'tutor-quote';
@@ -480,6 +482,41 @@ async function prepareShot(blob) {
 
 function postAsk(meta, payload) {
   return postAi(meta, '/api/ask', payload);
+}
+
+// ---------------------------------------------------------------------------
+// Who is asking
+//
+// A tutor that does not know what you are studying can only answer in general,
+// and a general answer to "how is this actually used?" is a dictionary with a
+// friendlier voice. Every question carries the same deck snapshot the news
+// digest is built from — what is in the review queue this week, what is solid,
+// what keeps slipping — plus the level the app has the learner at and whatever
+// the placement interview measured. The Worker turns that into a few lines at
+// the top of the prompt (see learnerBlock there) so an answer can be pitched at
+// the right level and built out of words they already hold.
+//
+// Read fresh for each question rather than cached: a word saved a minute ago
+// should be able to turn up in the next answer, and one storage read costs
+// nothing beside a model call.
+// ---------------------------------------------------------------------------
+
+async function learnerProfile() {
+  const { wordlist = [], hskLevel = null, [RESULTS_KEY]: results = [] } = await chrome.storage.local
+    .get(['wordlist', 'hskLevel', RESULTS_KEY]).catch(() => ({}));
+  const profile = buildProfile(Array.isArray(wordlist) ? wordlist : []);
+  if (Number.isInteger(hskLevel)) profile.hskLevel = hskLevel;
+  // The interview is a measurement rather than the app's working guess, so it
+  // travels separately — with its summary, which says what came apart.
+  const [placed] = Array.isArray(results) ? results : [];
+  if (placed && Number.isInteger(placed.level)) {
+    profile.placement = {
+      level: placed.level,
+      at: placed.at || null,
+      summary: placed.report?.summary || '',
+    };
+  }
+  return profile;
 }
 
 // Mount a tutor panel.
@@ -993,6 +1030,7 @@ export function createTutor(options) {
     const where = context() || {};
     const payload = {
       question,
+      profile: await learnerProfile(),
       selection: quote?.text || '',
       images: attached.map((s) => ({ mime: s.mime, data: s.data })),
       // So the model can say "the picture you sent earlier" rather than

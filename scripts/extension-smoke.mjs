@@ -714,8 +714,17 @@ await check('news opens on the last article and offers the ones before it', asyn
   })))},
     syncMeta: { token: 'smoketokensmoketokensmoketoken', serverUrl: location.origin,
                 cursor: 0, lastPushAt: 0 } })`);
+  // The script toggle is profile-wide and an earlier check may have left it on
+  // traditional, which would repaint these headlines as 海邊的塑料 — a different
+  // string to match. This check is about the archive, so it pins the script.
+  await newsTab.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
+  // Stamp the outgoing document: a reload does not commit synchronously, and
+  // an earlier check may well have left an article on screen — the wait below
+  // would then be satisfied by the page on its way out.
+  await newsTab.evalJs('window.__stale = true');
   await newsTab.evalJs('location.reload()');
-  await newsTab.waitFor('!!document.querySelector(".article p")', 'the newest article');
+  await newsTab.waitFor('!window.__stale && !!document.querySelector(".article p")',
+    'the newest article');
   assert.match(await newsTab.evalJs('document.querySelector(".headline h2").textContent'),
     /海边的塑料/, 'the page opened on something other than the most recent article');
   await newsTab.waitFor('!document.getElementById("history").hidden', 'the archive button');
@@ -1221,6 +1230,14 @@ await check('the tutor asks the Worker with the card as context', async () => {
   assert.equal(asked.question, 'How is this word actually used?');
   assert.match(asked.context.where, /flashcard/);
   assert.match(asked.context.text, /Word card:|Sentence card:/);
+  // …and with who is asking. An answer pitched at nobody in particular is a
+  // dictionary entry with a friendlier voice.
+  assert.ok(asked.profile, 'the question carried no learner profile');
+  assert.equal(typeof asked.profile.savedWords, 'number', 'no deck counts in the profile');
+  assert.ok(Array.isArray(asked.profile.studyingWords), 'no review queue in the profile');
+  assert.ok(asked.profile.recentWords.includes('努力'),
+    `the card being reviewed is not in the deck the tutor was given: ${
+      JSON.stringify(asked.profile.recentWords)}`);
 });
 // Pasting a picture. The questions a learner most wants to ask are often about
 // Chinese the extension cannot reach — a sign, a menu, a screenshot from

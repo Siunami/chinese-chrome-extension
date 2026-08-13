@@ -181,10 +181,14 @@ headless Chrome, so they cannot quietly stop being true.)*
   anything and ask about it** — the selection travels with the question, so the
   answer is about that exact text rather than the page in general. On a
   flashcard it also gets the card itself: the word, its reading, the gloss, the
-  example on screen, and how many times you have forgotten it. **Ask** is a
-  switch in the navbar and the drawer pushes the page aside rather than covering
-  it; paste a photo of a sign or a menu into the box to ask about Chinese that
-  is not on the screen at all.
+  example on screen, and how many times you have forgotten it. Every question
+  also carries **who is asking** — your level and what your deck says you are
+  drilling, know, and keep failing — so answers are pitched at you and built out
+  of words you already hold, and it can **search the web** when the answer
+  depends on something outside the dictionary. **Ask** is a switch in the navbar
+  and the drawer pushes the page aside rather than covering it; paste a photo of
+  a sign or a menu into the box to ask about Chinese that is not on the screen
+  at all.
   See [Asking questions](#asking-questions).
 - **One app, one navbar** — Review, Library, Guides, News, and Settings all
   wear the same top bar, with live due/saved counts on the tabs that have them.
@@ -389,9 +393,11 @@ every sentence of every bundled reading passage, every worked example and every
 vocabulary item really does resolve to one, so no ☆ in a guide is a promise the
 resolver cannot keep — and `tests/ask.test.mjs` drives the real Worker module
 to check the tutor's guards, its rate limit, that a highlighted passage
-actually reaches the model prompt, and that an attached image reaches the model
-as an image — with the type, size and count caps refusing a bad one without
-spending one of the learner's forty questions. `tests/translate.test.mjs` and `tests/translate-sweep.test.mjs` cover the two
+actually reaches the model prompt, that the learner's level and deck reach it
+too (clamped, so a large deck cannot become a large prompt), that the web-search
+tool is offered and that a provider refusing it still answers, and that an
+attached image reaches the model as an image — with the type, size and count
+caps refusing a bad one without spending one of the learner's forty questions. `tests/translate.test.mjs` and `tests/translate-sweep.test.mjs` cover the two
 halves of card translation — the endpoint's guards, budget and clamping, and
 the client's decisions about what to send, what to retry, and what to leave
 alone when a request fails. `tests/aistatus.test.mjs` covers the thing that
@@ -560,6 +566,14 @@ npx wrangler secret put FAL_KEY                   # (optional) FAL_MODEL, defaul
 
 npx wrangler deploy
 ```
+
+Two vars worth knowing about, both optional and both on the tutor: images are
+sent to the model as images on OpenAI and Azure (fal's `any-llm` is text-only,
+and the tutor is told to say so rather than answering as if the picture were not
+there), and `ASK_WEB_SEARCH=false` turns off the tutor's ability to look things
+up on the web. Deploy after changing either — a Worker serving an older bundle
+accepts a question with a picture attached and silently drops it, which the
+extension will now tell you about rather than leaving the model to apologize.
 
 Verified-working `FAL_MODEL` values on fal's `any-llm`: `google/gemini-flash-1.5`
 (default, cheap), `openai/gpt-4o`, `openai/gpt-4o-mini`. If fal rejects one with
@@ -826,6 +840,28 @@ on the page, so the answer is about *that* fragment rather than the page in
 general. The mark uses the CSS Custom Highlight API, so pointing at something
 never disturbs the hoverable characters underneath it. Answers are hoverable
 too — any Chinese the tutor writes gets the same popup as everything else.
+
+**It knows what you are studying.** Every question carries the same deck
+snapshot the news digest is built from (`extension/lib/profile.js`): the words
+in your review queue this week, the ones you reliably know, the ones you keep
+failing, what you saved most recently, and the size of the deck — plus the level
+the app has you at and, if you have sat one, what the [placement
+interview](#placement-interview) measured. The Worker turns that into a few
+lines at the top of the prompt, and the tutor is told to use it rather than
+recite it: explain at your level, build example sentences out of words you
+already hold, prefer a word from your review queue over a fresh one when either
+would do, and gloss anything it has to reach above you for. It will not tell you
+it is doing this — an answer that opens with "since you are HSK 3" is a worse
+answer.
+
+**It can look things up.** Grammar and vocabulary it already knows, and a search
+would only be slower. But a question about a song, a place, a person, current
+events, or slang that may have moved on is one a learner will actually ask, and
+"I cannot know that" is a worse answer than a search — so `/api/ask` hands the
+model the provider's built-in web search and lets it decide. The name of that
+tool has changed across versions of the API and some models have neither
+spelling, so the Worker offers each in turn and then answers without it rather
+than failing the question. Set `ASK_WEB_SEARCH=false` to switch it off.
 
 The tutor runs on your own Worker at `POST /api/ask`, authenticated with the
 same private pairing token as sync and the news digest, and uses whichever model

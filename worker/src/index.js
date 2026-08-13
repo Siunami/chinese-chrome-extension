@@ -490,8 +490,12 @@ function modelFailure(event, err, message) {
 }
 
 // Turn a system + user prompt into text on whichever provider is configured.
-// `images` (optional) are [{ mime, data }] the learner attached to the question.
-async function callModel(env, system, prompt, images = []) {
+//
+//   images  (optional) [{ mime, data }] the learner attached to the question
+//   search  (optional) let the model look things up on the web. Only the tutor
+//           asks for it, and only OpenAI's Responses API can do it — the search
+//           runs on the provider's side, so there is no tool loop here.
+async function callModel(env, system, prompt, images = [], { search = false } = {}) {
   const provider = providerConfigured(env);
   // fal-ai/any-llm takes a string prompt and nothing else, so an attachment
   // cannot be sent there. Saying so in the prompt is better than answering as
@@ -511,20 +515,53 @@ async function callModel(env, system, prompt, images = []) {
       url: `${base}/openai/v1/responses?api-version=${version}`,
       headers: { 'api-key': env.AZURE_OPENAI_KEY },
       model: env.AZURE_OPENAI_DEPLOYMENT,
-    }, system, prompt, images);
+    }, system, prompt, images, { search });
   }
   return callOpenAIText({
     label: 'openai',
     url: 'https://api.openai.com/v1/responses',
     headers: { authorization: `Bearer ${env.OPENAI_API_KEY}` },
     model: env.OPENAI_MODEL || 'gpt-4o',
-  }, system, prompt, images);
+  }, system, prompt, images, { search });
 }
 
-// OpenAI / Azure OpenAI Responses API, plain text (no tools). With attachments
-// the input becomes one user message of parts, which is the only shape the
-// Responses API takes an image in.
-async function callOpenAIText(cfg, system, user, images = []) {
+// The built-in web-search tool has been spelled two ways across versions of the
+// Responses API, and a deployment may be on a model that has neither. Rather
+// than pin a name and have questions fail on somebody else's account, offer
+// each in turn and then go without: an answer from training beats a 502.
+const WEB_SEARCH_TOOLS = [[{ type: 'web_search' }], [{ type: 'web_search_preview' }], null];
+
+// Does this look like the provider refusing the tool, rather than refusing us?
+// Only then is retrying without it the right move; a bad key must still fail.
+function toolRejected(err) {
+  return !err?.providerAuth && !err?.providerQuota
+    && /\b(400|404|422)\b/.test(String(err?.message || ''))
+    && /tool|web_search|unsupported|not supported/i.test(String(err?.message || ''));
+}
+
+// OpenAI / Azure OpenAI Responses API. With attachments the input becomes one
+// user message of parts, which is the only shape the Responses API takes an
+// image in; with `search` the model may call the provider's own web search
+// before it answers, and only the final message comes back to us.
+async function callOpenAIText(cfg, system, user, images = [], { search = false } = {}) {
+  if (!search) return responsesCall(cfg, system, user, images, null);
+  let lastErr;
+  for (const tools of WEB_SEARCH_TOOLS) {
+    try {
+      return await responsesCall(cfg, system, user, images, tools);
+    } catch (err) {
+      if (!toolRejected(err)) throw err;
+      lastErr = err;
+      console.log(JSON.stringify({
+        event: 'web_search_unavailable', tool: tools?.[0]?.type || 'none',
+        error: String(err.message).slice(0, 200),
+      }));
+    }
+  }
+  throw lastErr;
+}
+
+async function responsesCall(cfg, system, user, images, tools) {
   const input = images.length
     ? [{
       role: 'user',
@@ -545,6 +582,7 @@ async function callOpenAIText(cfg, system, user, images = []) {
       instructions: system,
       input,
       max_output_tokens: 16000,
+      ...(tools ? { tools } : {}),
     }),
   });
   if (!res.ok) {
@@ -1008,8 +1046,11 @@ Rules:
 - No preamble, no "great question", no summary of what you are about to say. Every sentence carries something.
 - For a grammar question: name the pattern, give ONE minimal example sentence, and state the single mistake learners most often make with it.
 - For a vocabulary question: give the meaning, the register (spoken/written/formal), and a near-synonym contrast if one matters.
-- Stay at or near the learner's level. Do not introduce advanced vocabulary to explain a beginner point.
+- THE MESSAGE TELLS YOU WHO YOU ARE TALKING TO: their HSK level and the words in their deck — what they are drilling this week, what they reliably know, what they keep failing. Follow it. Explain at that level, build your example sentences out of words they already know, and prefer a word from their review queue over a fresh one when either would do: meeting their own word in a new sentence is worth more than meeting a stranger. When the answer needs a word above their level, use it and gloss it rather than talking around it.
+- If the word they are asking about is one the message lists as giving them trouble, treat it as such: say what usually trips people up about it, and anchor it to something on their known list.
+- Never mention the profile, the lists, or the level itself. Do not say "since you are HSK 3" or "I see you have saved 200 words". Just answer that way.
 - If the learner attached an image — a sign, a menu, a screenshot, a page of a book — read the Chinese in it and answer about that. Transcribe the characters you are talking about so they can be looked up, and say plainly if part of it is too blurry or cropped to read rather than guessing at it.
+- You can search the web, and should when the answer depends on something you cannot know from training: current events, a song or show or person they name, a place, slang that may have moved on, or anything they explicitly ask you to look up. Search, then answer as a tutor — in the shape the rules above ask for, at their level — rather than reporting what you found. Name the source in a few words when the fact is the point. Do not search for ordinary grammar and vocabulary questions; you already know those, and a search is slower and no better.
 - Never invent a word, a character, or a usage. If you are not sure, say you are not sure.
 - Plain text only. No markdown, no asterisks, no headings, no numbered lists with special formatting — just sentences and, at most, short lines separated by newlines.`;
 
@@ -1078,12 +1119,72 @@ function askImages(body) {
   return { images };
 }
 
+// Who the tutor is talking to.
+//
+// A tutor that does not know what you are studying can only answer in general,
+// and a general answer to "how is this used?" is a dictionary with a friendlier
+// voice. The client sends the same deck snapshot the news digest is built from
+// (extension/lib/profile.js) plus the level the app has them at, so an answer
+// can be pitched at that level and built out of words they already hold.
+//
+// Everything here is clamped rather than trusted: these lists are drawn from a
+// deck that can be any size, and they are going into a prompt.
+const MAX_ASK_WORDS = 40;   // per list
+const MAX_WORD_CHARS = 24;
+
+function wordList(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter((w) => typeof w === 'string' && w.trim())
+    .slice(0, MAX_ASK_WORDS)
+    .map((w) => w.trim().slice(0, MAX_WORD_CHARS));
+}
+
+function learnerBlock(body) {
+  const profile = body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile)
+    ? body.profile : null;
+  if (!profile) return '';
+  const lines = [];
+  const level = Number(profile.hskLevel);
+  if (Number.isInteger(level) && level >= 1 && level <= 9) {
+    lines.push(`- Working at about HSK ${level}.`);
+  }
+  const placed = profile.placement && typeof profile.placement === 'object'
+    ? profile.placement : null;
+  if (placed && Number.isInteger(Number(placed.level))) {
+    // The interview is a measurement rather than a guess, so it is worth
+    // stating separately from the level the app is currently teaching at.
+    lines.push(`- A placement interview put them at HSK ${Number(placed.level)}`
+      + `${askText(placed.summary, 300) ? `: ${askText(placed.summary, 300)}` : '.'}`);
+  }
+  const counts = [];
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  if (num(profile.savedWords) !== null) counts.push(`${num(profile.savedWords)} words saved`);
+  if (num(profile.reviewedWords) !== null) counts.push(`${num(profile.reviewedWords)} in review`);
+  if (num(profile.matureWords) !== null) counts.push(`${num(profile.matureWords)} of those well established`);
+  if (counts.length) lines.push(`- Deck: ${counts.join(', ')}.`);
+
+  const say = (label, words) => {
+    const list = wordList(words);
+    if (list.length) lines.push(`- ${label}: ${list.join('、')}`);
+  };
+  say('Drilling this week (prefer these in examples)', profile.studyingWords);
+  say('Knows reliably (safe to build sentences from)', profile.knownWords);
+  say('Keeps failing', profile.strugglingWords);
+  say('Saved most recently', profile.recentWords);
+
+  return lines.length ? `Who you are talking to:\n${lines.join('\n')}` : '';
+}
+
 // The guide the learner is on, the part they highlighted, and the last few
 // turns — enough for follow-ups like "and the second one?" without shipping
 // the whole conversation every time.
 function buildAskPrompt(body) {
   const context = body.context && typeof body.context === 'object' ? body.context : {};
   const parts = [];
+  // First, because it colours every other line: the level and the deck decide
+  // what the answer may be built out of.
+  const learner = learnerBlock(body);
+  if (learner) parts.push(learner);
   const level = Number(context.level);
   if (Number.isInteger(level) && level >= 1 && level <= 9) {
     parts.push(`The learner is reading the HSK ${level} study guide.`);
@@ -1151,7 +1252,12 @@ async function handleAsk(request, env) {
 
   let answer;
   try {
-    answer = await callModel(model.env, ASK_SYSTEM, buildAskPrompt(body), attached.images);
+    // The tutor is the one endpoint that gets to look things up: a question
+    // about a song, a place or something in this week's news is one a learner
+    // will actually ask, and "I cannot know that" is a worse answer than a
+    // search. Deployments can switch it off with ASK_WEB_SEARCH=false.
+    answer = await callModel(model.env, ASK_SYSTEM, buildAskPrompt(body), attached.images,
+      { search: String(env.ASK_WEB_SEARCH) !== 'false' });
   } catch (err) {
     return modelFailure('ask_error', err, 'could not answer that right now; try again shortly');
   }

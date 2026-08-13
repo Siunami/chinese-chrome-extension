@@ -159,6 +159,127 @@ await test('a provider failure surfaces as 502, not a crash', async () => {
   }
 });
 
+// Who the tutor is talking to. Without this the answer can only be general,
+// and a general answer to "how is this actually used?" is a dictionary with a
+// friendlier voice.
+const PROFILE = {
+  hskLevel: 3,
+  savedWords: 212,
+  reviewedWords: 140,
+  matureWords: 61,
+  studyingWords: ['顺便', '恰好'],
+  knownWords: ['喜欢', '习惯'],
+  strugglingWords: ['舍不得'],
+  recentWords: ['迟早'],
+  placement: { level: 4, summary: 'Comfortable on everyday topics, thin on abstract ones.' },
+};
+
+await test('the learner\'s level, deck and placement reach the prompt', async () => {
+  const model = stubModel('顺便 rides along with something you are already doing.');
+  try {
+    await worker.fetch(post({ question: 'How is 顺便 used?', profile: PROFILE }, auth),
+      { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    const prompt = model.seen[0].input;
+    assert.match(prompt, /Working at about HSK 3/, 'the level is missing');
+    assert.match(prompt, /placement interview put them at HSK 4: Comfortable on everyday/,
+      'the interview result is missing');
+    assert.match(prompt, /212 words saved, 140 in review, 61 of those well established/);
+    assert.match(prompt, /Drilling this week[^\n]*顺便、恰好/);
+    assert.match(prompt, /Knows reliably[^\n]*喜欢、习惯/);
+    assert.match(prompt, /Keeps failing[^\n]*舍不得/);
+  } finally {
+    model.restore();
+  }
+});
+
+await test('a huge deck is clamped rather than shipped whole', async () => {
+  const model = stubModel('ok');
+  try {
+    await worker.fetch(post({
+      question: 'q',
+      profile: { studyingWords: Array.from({ length: 400 }, (_, i) => `词${i}`) },
+    }, auth), { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    const line = model.seen[0].input.split('\n').find((l) => l.startsWith('- Drilling'));
+    assert.equal(line.split('、').length, 40, `sent ${line.split('、').length} words`);
+  } finally {
+    model.restore();
+  }
+});
+
+await test('a question with no profile still works', async () => {
+  const model = stubModel('ok');
+  try {
+    const res = await worker.fetch(post({ question: 'why?' }, auth),
+      { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(model.seen[0].input, /Who you are talking to/);
+  } finally {
+    model.restore();
+  }
+});
+
+// Looking things up. A question about a song, a place, or something in this
+// week's news is one a learner will actually ask, and "I cannot know that" is a
+// worse answer than a search.
+await test('the tutor is given the web-search tool, unless it is switched off', async () => {
+  const model = stubModel('ok');
+  try {
+    await worker.fetch(post({ question: 'q' }, auth), { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.deepEqual(model.seen[0].tools, [{ type: 'web_search' }]);
+
+    await worker.fetch(post({ question: 'q' }, auth),
+      { DB: fakeDb(), OPENAI_API_KEY: 'k', ASK_WEB_SEARCH: 'false' });
+    assert.equal(model.seen[1].tools, undefined, 'the tool was sent with search switched off');
+  } finally {
+    model.restore();
+  }
+});
+
+// The tool has been spelled two ways across versions of the Responses API, and
+// some models have neither — a question must not fail over that.
+await test('a provider that refuses the search tool still answers', async () => {
+  const real = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push(body.tools?.[0]?.type || 'none');
+    if (body.tools) {
+      return new Response(JSON.stringify({ error: { message: 'Unsupported tool web_search' } }),
+        { status: 400 });
+    }
+    return new Response(JSON.stringify({ output_text: 'answered anyway' }),
+      { headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const res = await worker.fetch(post({ question: 'q' }, auth),
+      { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).answer, 'answered anyway');
+    assert.deepEqual(seen, ['web_search', 'web_search_preview', 'none'],
+      'it should try each spelling, then go without');
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+await test('a rejected key is not retried as a tool problem', async () => {
+  const real = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response('invalid api key', { status: 401 });
+  };
+  try {
+    const res = await worker.fetch(post({ question: 'q' }, auth),
+      { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.equal(res.status, 502);
+    assert.equal((await res.json()).code, 'provider_auth');
+    assert.equal(calls, 1, 'a bad key was retried');
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
 // Attached images. The learner pastes a photo of a sign or a screenshot of a
 // sentence the extension does not run on; it has to reach the model as an
 // image, not be quietly dropped on the way.
