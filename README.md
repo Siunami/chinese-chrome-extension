@@ -421,6 +421,37 @@ makes the credential checkbox safe. A file that is not a backup, or one written
 by a newer version of the extension than can read it, is refused with a
 sentence rather than half-applied.
 
+### When the browser runs out of room
+
+`chrome.storage.local` holds **10 MB** without the `unlimitedStorage`
+permission, and this app can get within sight of that on its own. The deck is
+not the problem — a word card is about 180 bytes, so a full 5,000-card library
+with its schedules is under a megabyte. The bulk is elsewhere: 60 news passages,
+and 40 tutor conversations whose last few messages keep their attached
+thumbnails (which is why `lib/tutor.js` drops images from older messages and
+stores 150px JPEGs rather than what you pasted). Together those can reach
+several megabytes.
+
+So the manifest asks for `unlimitedStorage`, which removes the `storage.local`
+cap and shows no permission warning at install. That is the fix; the rest is
+what happens when a write fails anyway — a full disk, an older Chrome, a
+profile under pressure:
+
+- **A restore is written in one call, and if that call fails, again a key at a
+  time** in a deliberate order: the deck first, because nothing anywhere can
+  reconstruct it; then everything else smallest-first, so one oversized value
+  cannot starve a dozen small ones; and the news archive, chat log and topic
+  cache last, being bulky and in the end replaceable. Whatever still would not
+  fit is **named** — "this browser would not store the news archive" — instead
+  of a restore that silently half-happened. Before this, an archive that did not
+  fit took the cards down with it, because they were in the same write.
+- The section reports **how much of this browser the app is holding**, which is
+  also roughly what the file will weigh, and the download says the size of the
+  file it just wrote.
+
+`chrome.storage.sync` is far smaller — 100 KB total, 8 KB per item, 120 writes
+a minute — but only settings live there, and they are a few hundred bytes.
+
 ## Tests
 
 Unit and protocol tests are plain Node scripts with no dependencies —
@@ -507,7 +538,10 @@ the only way to find out that the page reads *all* of storage into the file
 (a backup with an empty `sync` half is the shape of this feature silently not
 working), that the credentials checkbox is obeyed, that the state comes back,
 that the page repaints itself instead of showing what it read on load, and that
-someone else's `.json` is refused rather than applied.
+someone else's `.json` is refused rather than applied. The out-of-room path is
+driven there too, by refusing every write that carries the news archive: the
+deck still has to land, the small keys with it, and the page has to say which
+part did not fit rather than reporting an unqualified success.
 
 `node scripts/screenshots.mjs` takes the pictures at the top of this file
 through the same harness, and writes them to `docs/shots/`. The learner in them
@@ -986,7 +1020,8 @@ extension/          the unpacked extension (load this folder in Chrome)
   lib/sync.js       sync client: push/pull against the worker
   lib/backup.js     what goes in a backup file and what restoring one means:
                     a dump of both storage areas, cards merged rather than
-                    overwritten on the way back in (pure; tested)
+                    overwritten on the way back in, and the order to put things
+                    back in when they will not all fit (pure; tested)
   lib/aistatus.js   whether the AI features can work (key present? refused by the
                     provider? server too old?) and the one POST every model-backed
                     call goes through — the navbar's notice reads it (tested)

@@ -93,6 +93,11 @@ export function readBackup(text) {
   return { ...data, version, sync: plain(data.sync), local: plain(data.local) };
 }
 
+export function joinList(parts) {
+  if (parts.length < 2) return parts[0] || '';
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
 // What is in this file, in the words the app uses elsewhere for it. Shown
 // before anything is written, because "Restore backup?" asks the learner to
 // approve something they cannot see.
@@ -108,10 +113,64 @@ export function summarizeBackup(backup) {
   add(size(local.tutorChatLog), 'tutor conversation', 'tutor conversations');
   if (typeof local.aiKey === 'string' && local.aiKey) parts.push('the API key');
   if (local.syncMeta && local.syncMeta.token) parts.push('the pairing code');
-  if (!parts.length) return 'an empty backup';
-  if (parts.length === 1) return parts[0];
-  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return parts.length ? joinList(parts) : 'an empty backup';
 }
+
+// ---------------------------------------------------------------------------
+// Writing a restore back into a browser that may not have room for it
+//
+// chrome.storage.local holds ten megabytes without the unlimitedStorage
+// permission, and this app can approach that on its own: sixty news passages,
+// forty tutor conversations carrying thumbnails, five thousand cards and five
+// thousand tombstones. The manifest asks for unlimitedStorage so the ceiling is
+// the disk rather than the number — but a quota is never the only reason a
+// write fails, and one that fails takes down whatever it was bundled with.
+//
+// So a restore that cannot be written in one call is written a key at a time,
+// in this order: the deck first, because nothing anywhere can reconstruct it;
+// then everything else smallest-first, so one oversized value cannot starve a
+// dozen small ones; and last the bulky, replaceable things — a news passage can
+// be generated again and suggested topics are a cache. Whatever is left over is
+// named rather than silently dropped.
+// ---------------------------------------------------------------------------
+
+const DECK_KEYS = ['wordlist', 'tombstones'];
+const BULK_KEYS = ['newsHistory', 'tutorChatLog', 'newsCategories'];
+
+export function restoreOrder(values) {
+  const bytes = (key) => JSON.stringify(values[key] ?? null).length;
+  const tier = (key) => {
+    if (DECK_KEYS.includes(key)) return 0;
+    return BULK_KEYS.includes(key) ? 2 : 1;
+  };
+  return Object.keys(values).sort((a, b) => {
+    if (tier(a) !== tier(b)) return tier(a) - tier(b);
+    // The deck keeps its own order rather than going smallest-first: the cards
+    // are the irreplaceable half, and an empty tombstone list is smaller than
+    // any deck, so size would send the wrong one in first.
+    if (tier(a) === 0) return DECK_KEYS.indexOf(a) - DECK_KEYS.indexOf(b);
+    return bytes(a) - bytes(b) || (a < b ? -1 : 1);
+  });
+}
+
+// Storage keys are not a thing to show anyone, but "the news archive did not
+// fit" is. Anything unnamed is a key from a newer build, so it says the key.
+const KEY_LABELS = {
+  wordlist: 'your saved cards',
+  tombstones: 'the record of deleted cards',
+  newsHistory: 'the news archive',
+  newsCategories: 'the suggested news topics',
+  newsDifficulty: 'the news level',
+  tutorChatLog: 'your tutor conversations',
+  tutorOpen: 'whether the tutor drawer is open',
+  placementResults: 'your placement results',
+  hskLevel: 'your HSK level',
+  enabled: 'the on/off switch',
+  aiKey: 'the API key',
+  syncMeta: 'the pairing code',
+};
+
+export const labelFor = (key) => KEY_LABELS[key] || `"${key}"`;
 
 // What to write, given the file and what this computer holds now.
 //

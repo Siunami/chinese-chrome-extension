@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import {
   FORMAT, SECRET_KEYS, TRANSIENT_KEYS, VERSION,
-  buildBackup, planRestore, readBackup, summarizeBackup,
+  buildBackup, joinList, labelFor, planRestore, readBackup, restoreOrder, summarizeBackup,
 } from '../extension/lib/backup.js';
 
 let passed = 0;
@@ -230,6 +230,44 @@ test('the summary says so when a backup holds no credentials, and when it holds 
   assert.match(plain, /^2 cards, 6 settings/);
   assert.equal(summarizeBackup(buildBackup({ sync: {}, local: {} })), 'an empty backup');
   assert.equal(summarizeBackup(buildBackup({ local: { wordlist: [card('你好')] } })), '1 card');
+});
+
+// --- writing it back into a browser that may not have room ----------------
+
+test('when it cannot go in at once, the deck goes in first', () => {
+  const plan = planRestore(roundTrip(buildBackup(fullState())), {}, 2000);
+  const order = restoreOrder(plan.local);
+  // Nothing regenerates a deck, so it does not queue behind a news archive —
+  // and the cards go before the record of what was deleted from them.
+  assert.deepEqual(order.slice(0, 2), ['wordlist', 'tombstones']);
+  // Bulky and, in the end, replaceable: last, whatever their size.
+  assert.deepEqual(
+    order.slice(-3).sort(),
+    ['newsCategories', 'newsHistory', 'tutorChatLog'],
+  );
+});
+
+test('between the two, the small things go first so one big value cannot starve them', () => {
+  const order = restoreOrder({
+    newsHistory: ['big'.repeat(500)],
+    wordlist: [card('你好')],
+    hskLevel: 3,
+    // A key from a build this code has never seen is ordinary state: neither
+    // privileged like the deck nor deprioritised like the archive.
+    progressStreak: { days: 12, best: 30 },
+    tombstones: [],
+  });
+  assert.deepEqual(order, ['wordlist', 'tombstones', 'hskLevel', 'progressStreak', 'newsHistory']);
+});
+
+test('what did not fit is named in words, and an unknown key names itself', () => {
+  assert.equal(labelFor('newsHistory'), 'the news archive');
+  assert.equal(labelFor('wordlist'), 'your saved cards');
+  assert.equal(labelFor('progressStreak'), '"progressStreak"');
+  assert.equal(joinList(['a']), 'a');
+  assert.equal(joinList(['a', 'b']), 'a and b');
+  assert.equal(joinList(['a', 'b', 'c']), 'a, b and c');
+  assert.equal(joinList([]), '');
 });
 
 console.log(`OK — ${passed} tests passed`);

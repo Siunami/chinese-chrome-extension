@@ -4,7 +4,9 @@ import {
   clearAiFailure, getAiStatus, onAiStatus,
 } from './lib/aistatus.js';
 import { DEFAULT_LIMITS } from './lib/srs.js';
-import { buildBackup, planRestore, readBackup, summarizeBackup } from './lib/backup.js';
+import {
+  buildBackup, joinList, labelFor, planRestore, readBackup, restoreOrder, summarizeBackup,
+} from './lib/backup.js';
 import { mountShell } from './lib/shell.js';
 import { onHanziPref } from './lib/hanzi.js';
 import qrcode from './lib/qr.js';
@@ -315,6 +317,7 @@ renderSync();
 // ---------------------------------------------------------------------------
 
 const backupEls = {
+  usage: document.getElementById('backupUsage'),
   secrets: document.getElementById('backupSecrets'),
   download: document.getElementById('backupDownload'),
   restore: document.getElementById('backupRestore'),
@@ -325,6 +328,47 @@ const backupEls = {
 function setBackupStatus(text, warn = false) {
   backupEls.status.textContent = text;
   backupEls.status.classList.toggle('warn', warn);
+}
+
+const fmtBytes = (n) => (n < 1024 * 1024
+  ? `${Math.max(1, Math.round(n / 1024))} KB`
+  : `${(n / (1024 * 1024)).toFixed(1)} MB`);
+
+// How much of this browser the app is using. The number the learner would want
+// before deciding whether any of this matters — and the size of the file the
+// button above is about to write.
+async function renderUsage() {
+  try {
+    const bytes = await chrome.storage.local.getBytesInUse(null);
+    backupEls.usage.textContent =
+      `This browser is holding ${fmtBytes(bytes)} of your learning, which is roughly `
+      + 'what the file will weigh.';
+  } catch {
+    // Not every context reports it; the section works fine without the number.
+    backupEls.usage.textContent = '';
+  }
+}
+
+// One write for the ordinary case, and a key-at-a-time retry when the browser
+// refuses it. A restore is the one moment the app writes everything at once, so
+// it is also the one moment a single oversized value can take the deck down
+// with it — see restoreOrder for what goes back first.
+async function writeArea(area, values) {
+  if (!Object.keys(values).length) return [];
+  try {
+    await chrome.storage[area].set(values);
+    return [];
+  } catch {
+    const skipped = [];
+    for (const key of restoreOrder(values)) {
+      try {
+        await chrome.storage[area].set({ [key]: values[key] });
+      } catch {
+        skipped.push(key);
+      }
+    }
+    return skipped;
+  }
 }
 
 backupEls.download.addEventListener('click', async () => {
@@ -349,8 +393,9 @@ backupEls.download.addEventListener('click', async () => {
   a.download = `zhongwen-explorer-backup-${new Date(backup.createdAt).toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
-  setBackupStatus(`Saved ${summarizeBackup(backup)}.${includeSecrets ? '' : ' The API key and'
-    + ' pairing code were left out, so restoring this file will not change either.'}`);
+  setBackupStatus(`Saved ${summarizeBackup(backup)} — ${fmtBytes(blob.size)}.`
+    + (includeSecrets ? '' : ' The API key and pairing code were left out, so restoring'
+      + ' this file will not change either.'));
   flashSaved();
 });
 
@@ -385,25 +430,29 @@ backupEls.file.addEventListener('change', async () => {
   // sync or another tab may have changed it while the confirmation was up.
   const current = await chrome.storage.local.get(['wordlist', 'tombstones']);
   const plan = planRestore(backup, current, Date.now());
-  try {
-    if (Object.keys(plan.sync).length) await chrome.storage.sync.set(plan.sync);
-    await chrome.storage.local.set(plan.local);
-  } catch (err) {
-    // Chrome's local area is capped, and a backup carrying a long news archive
-    // is the way to reach it. Saying which limit was hit beats a page that
-    // looks like it restored.
-    setBackupStatus(`Could not write everything in that backup: ${err.message}`, true);
-    return;
-  }
+  const skipped = [
+    ...await writeArea('sync', plan.sync),
+    ...await writeArea('local', plan.local),
+  ];
   chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
 
   showSettings(await chrome.storage.sync.get(DEFAULTS));
   renderAiKey();
   renderSync();
-  const cards = plan.local.wordlist.length;
-  setBackupStatus(`Restored. Your library now has ${cards} card${cards === 1 ? '' : 's'}.`);
+  renderUsage();
+  // Counted from storage rather than from the plan: if something did not go in,
+  // the number has to be what is actually there.
+  const { wordlist = [] } = await chrome.storage.local.get('wordlist');
+  const restored = `Restored. Your library now has ${wordlist.length} `
+    + `card${wordlist.length === 1 ? '' : 's'}.`;
+  setBackupStatus(skipped.length
+    ? `${restored} This browser would not store ${joinList(skipped.map(labelFor))} — it is `
+      + 'out of room, so that much of the backup is still only in the file.'
+    : restored, skipped.length > 0);
   flashSaved();
 });
+
+renderUsage();
 
 testVoice.addEventListener('click', async () => {
   const result = await chrome.runtime.sendMessage({

@@ -648,6 +648,9 @@ await check('restoring that file puts the state back', async () => {
     await chrome.storage.local.set({ hskLevel: 9, newsDifficulty: 'easier' });
     await chrome.storage.sync.set({ theme: 'light' });
     document.getElementById('theme').value = 'light';
+    // Blank it first: the line still holds the last message, and waiting for a
+    // word that is already on screen is waiting for nothing.
+    document.getElementById('backupStatus').textContent = '';
     const input = document.getElementById('backupFile');
     const dt = new DataTransfer();
     dt.items.add(new File([${JSON.stringify(backupText)}], 'backup.json',
@@ -655,7 +658,7 @@ await check('restoring that file puts the state back', async () => {
     input.files = dt.files;
     input.dispatchEvent(new Event('change', { bubbles: true }));
     const status = document.getElementById('backupStatus');
-    for (let i = 0; i < 100 && !/^Restored/.test(status.textContent); i++) {
+    for (let i = 0; i < 100 && !status.textContent; i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
     return {
@@ -673,16 +676,87 @@ await check('restoring that file puts the state back', async () => {
   assert.equal(result.shown, 'dark', 'the page still shows the pre-restore settings');
 });
 
+// The failure this has to survive: a browser with no room left. A restore is
+// the one moment the app writes everything it has at once, so an all-or-nothing
+// write would let a news archive that does not fit take the deck down with it.
+await check('a restore that does not fit still puts back everything that does', async () => {
+  const result = await opts.evalJs(`(async () => {
+    window.confirm = () => true;
+    // A backup carrying one bulky key and one small one, from a build with a
+    // key this extension has never heard of.
+    const file = JSON.stringify({
+      format: 'zhongwen-explorer-backup',
+      version: 1,
+      createdAt: 1700000000000,
+      local: {
+        wordlist: [],
+        newsHistory: [{ id: 'x', generatedAt: 1, data: { headline: 'x' } }],
+        progressStreak: { days: 12 },
+      },
+      sync: {},
+    });
+    // Stand in for a full profile: refuse any write carrying the archive,
+    // which is what hitting the quota looks like from here.
+    const realSet = chrome.storage.local.set.bind(chrome.storage.local);
+    chrome.storage.local.set = (values) => (values && 'newsHistory' in values
+      ? Promise.reject(new Error('QUOTA_BYTES quota exceeded'))
+      : realSet(values));
+    const cardsBefore =
+      ((await chrome.storage.local.get('wordlist')).wordlist || []).length;
+    try {
+      const status = document.getElementById('backupStatus');
+      status.textContent = '';
+      const input = document.getElementById('backupFile');
+      const dt = new DataTransfer();
+      dt.items.add(new File([file], 'backup.json', { type: 'application/json' }));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      for (let i = 0; i < 100 && !status.textContent; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const after = await chrome.storage.local.get(['wordlist', 'newsHistory', 'progressStreak']);
+      return {
+        status: status.textContent,
+        warned: status.classList.contains('warn'),
+        cardsBefore,
+        cardsAfter: (after.wordlist || []).length,
+        smallKey: after.progressStreak,
+        archive: after.newsHistory || null,
+      };
+    } finally {
+      chrome.storage.local.set = realSet;
+    }
+  })()`);
+  // The deck is written first and on its own, so it lands however full the
+  // browser is.
+  assert.equal(result.cardsAfter, result.cardsBefore, 'the deck did not survive');
+  // And so does everything else small enough to fit, rather than being lost
+  // alongside the one key that did not.
+  assert.equal(JSON.stringify(result.smallKey), '{"days":12}',
+    `the small key did not land: ${JSON.stringify(result)}`);
+  assert.equal(result.archive, null, 'the archive was written after all');
+  // What did not fit is named in words, not left to be discovered later.
+  assert.match(result.status, /news archive/);
+  assert.match(result.status, /out of room/);
+  assert.ok(result.warned, 'a partial restore was reported as an unqualified success');
+});
+
+await check('the page says how much of this browser the app is using', async () => {
+  const usage = await opts.evalJs('document.getElementById("backupUsage").textContent');
+  assert.match(usage, /holding \d+(\.\d+)? (KB|MB) of your learning/);
+});
+
 await check('a file that is not a backup is refused rather than applied', async () => {
   const status = await opts.evalJs(`(async () => {
     window.confirm = () => true;
+    const el = document.getElementById('backupStatus');
+    el.textContent = '';
     const input = document.getElementById('backupFile');
     const dt = new DataTransfer();
     dt.items.add(new File(['{"hello":"world"}'], 'notes.json', { type: 'application/json' }));
     input.files = dt.files;
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    const el = document.getElementById('backupStatus');
-    for (let i = 0; i < 100 && /^Restored/.test(el.textContent); i++) {
+    for (let i = 0; i < 100 && !el.textContent; i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
     return el.textContent;

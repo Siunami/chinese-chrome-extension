@@ -301,6 +301,14 @@ const CHROME_SHIM = `
         notify(name, changes);
         return Promise.resolve();
       },
+      // Chrome measures the key plus its JSON value; close enough that the
+      // page's "holding 2.3 MB" line is exercised rather than skipped.
+      getBytesInUse(keys) {
+        const bag = store[name];
+        const names = keys == null ? Object.keys(bag) : [].concat(keys);
+        return Promise.resolve(names.reduce(
+          (n, k) => n + (k in bag ? k.length + JSON.stringify(bag[k]).length : 0), 0));
+      },
       remove(keys) {
         const changes = {};
         for (const k of [].concat(keys)) {

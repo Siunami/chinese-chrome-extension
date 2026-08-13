@@ -3,7 +3,7 @@
   "name": "Zhongwen Explorer",
   "version": "1.7.0",
   "description": "Hover over Chinese text for an instant popup with pinyin, concise CC-CEDICT definitions, and real example sentences.",
-  "permissions": ["storage", "tts", "alarms"],
+  "permissions": ["storage", "tts", "alarms", "unlimitedStorage"],
   "background": {
     "service_worker": "background.js",
     "type": "module"
