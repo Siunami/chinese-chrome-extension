@@ -20,7 +20,10 @@ import { buildProfile } from './lib/profile.js';
 import { levelLadder } from './lib/progress.js';
 import { createLookup } from './lib/lookup.js';
 import { mountShell } from './lib/shell.js';
-import { DEFAULT_SERVER_URL, aiHeaders, getSyncMeta, newToken } from './lib/sync.js';
+import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './lib/sync.js';
+import {
+  AI_BAD_KEY, AI_NO_KEY, AI_NO_QUOTA, AI_NOTICES, AI_STALE_SERVER, postAi,
+} from './lib/aistatus.js';
 import { guideByLevel } from './guides/index.js';
 
 const { saver } = globalThis.ZhongwenSaveCard;
@@ -80,7 +83,9 @@ const fmtDate = (ts) => new Date(ts).toLocaleDateString(undefined,
 let run = null;
 
 function newRun(startLevel, profile) {
-  return { startLevel, profile, turns: [], busy: false, error: '', finished: false };
+  return {
+    startLevel, profile, turns: [], busy: false, error: '', errorCode: '', finished: false,
+  };
 }
 
 const messagesFor = (turns) => turns.flatMap((t) => [
@@ -88,19 +93,13 @@ const messagesFor = (turns) => turns.flatMap((t) => [
   ...(t.answer ? [{ role: 'learner', content: t.answer }] : []),
 ]);
 
+// lib/aistatus.js owns the transport: it turns a rejected key or an
+// out-of-date Worker into something the navbar can act on, rather than a
+// sentence only this page shows.
 async function post(payload) {
   const meta = await getSyncMeta();
   if (!meta || !meta.token || !meta.serverUrl) throw new Error('not paired');
-  const res = await fetch(`${meta.serverUrl.replace(/\/+$/, '')}/api/placement`, {
-    method: 'POST',
-    headers: await aiHeaders(meta),
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok || !data || data.error) {
-    throw new Error(data?.detail || data?.error || `server error (http ${res.status})`);
-  }
-  return data;
+  return postAi(meta, '/api/placement', payload);
 }
 
 // One turn: send the answer just typed (if any), get back its mark and the
@@ -137,6 +136,10 @@ async function step(answer = '') {
     // The answer stays on the turn, so retrying re-sends it rather than
     // asking the learner to type it again.
     run.error = err.message === 'not paired' ? 'not paired' : err.message;
+    // A key that was refused, or a server too old to have this route, is not
+    // something Try again will ever get past — postAi names those, and the box
+    // offers the thing that would actually fix them.
+    run.errorCode = err.message === 'not paired' ? 'not paired' : (err.code || '');
     render();
     return;
   }
@@ -264,11 +267,15 @@ function renderInterview() {
   root.append(log);
 
   if (run.error) {
+    // Three kinds of stop, and only one of them is worth a Try again button.
+    const settled = [AI_BAD_KEY, AI_NO_QUOTA, AI_NO_KEY, AI_STALE_SERVER]
+      .includes(run.errorCode);
     const box = el('div', 'error');
     box.append(el('p', null, run.error === 'not paired'
       ? 'The interview runs on the same private token as the tutor and sync, and there '
         + 'is not one on this device yet.'
-      : `Could not reach the examiner: ${run.error}`));
+      : settled ? run.error
+        : `Could not reach the examiner: ${run.error}`));
     const actions = el('div', 'row');
     if (run.error === 'not paired') {
       actions.append(button('primary', 'Enable it', async () => {
@@ -279,6 +286,19 @@ function renderInterview() {
         retry();
       }));
       actions.append(button('', 'Open Options', () => chrome.runtime.openOptionsPage()));
+    } else if (settled) {
+      // Pressing Try again against a rejected key just spends another minute
+      // being told the same thing. Send them where the fix is instead — and
+      // keep a retry beside it, for once they are back.
+      const target = AI_NOTICES[run.errorCode]?.target || 'ai';
+      actions.append(button('primary', 'Open Options', () => {
+        if (window.parent !== window) {
+          chrome.tabs.create({ url: chrome.runtime.getURL(`options.html#${target}`) });
+        } else {
+          location.href = `options.html#${target}`;
+        }
+      }));
+      actions.append(button('', 'Try again', retry));
     } else {
       // Retry re-sends the answer already sitting on the turn, so a dropped
       // request costs the connection and not the answer.
@@ -335,6 +355,7 @@ async function finishEarly() {
 function retry() {
   const last = run.turns[run.turns.length - 1];
   run.error = '';
+  run.errorCode = '';
   step(last && last.answer ? last.answer : '');
 }
 

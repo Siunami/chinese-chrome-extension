@@ -25,6 +25,13 @@ const PATHS = {
   chat: [['path', {
     d: 'M13.4 9a2 2 0 0 1-2 2H6.2l-3.6 2.5V4.4a2 2 0 0 1 2-2h6.8a2 2 0 0 1 2 2z',
   }]],
+  // Something needs attention. A triangle rather than a circle: it reads as a
+  // warning at 14px where an (!) in a circle reads as "more information".
+  warn: [
+    ['path', { d: 'M8 2.6L14.2 13H1.8z' }],
+    ['path', { d: 'M8 6.4v3.1' }],
+    ['path', { d: 'M8 11.4v0.1' }],
+  ],
 };
 
 export function icon(name, size = 15) {

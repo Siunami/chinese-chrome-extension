@@ -195,6 +195,27 @@ body.embedded .zx-header { display: none; }
 .zx-app .zx-ask:disabled { opacity: 0.45; cursor: default; }
 .zx-ask:focus-visible { outline: 2px solid var(--zx-red); outline-offset: 2px; }
 
+/* The AI notice: something the learner has to do before four of the features
+   work. Amber rather than the app's red — red in this bar is the current tab
+   and the brand mark, and a warning that shares their colour reads as another
+   piece of navigation. It sits left of the controls, so it is the first thing
+   after the tabs rather than something tucked behind Options. */
+.zx-notice {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 11px; border: 1px solid #e6c98a; border-radius: 999px;
+  background: #fdf6e3; color: #8a5d00; font: inherit; font-size: 12.5px;
+  font-weight: 650; text-decoration: none; cursor: pointer;
+}
+.zx-notice[hidden] { display: none; }
+.zx-notice svg {
+  flex: none; fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.zx-app .zx-notice:hover, .zx-notice:hover {
+  border-color: #d4ac5a; background: #fbefcf; color: #6d4a00;
+}
+.zx-notice:focus-visible { outline: 2px solid var(--zx-red); outline-offset: 2px; }
+
 .zx-settings {
   padding: 6px 10px; border: 1px solid transparent; border-radius: 8px;
   background: none; color: var(--zx-muted); font: inherit; font-size: 12px;
@@ -215,6 +236,10 @@ body.embedded .zx-header { display: none; }
   /* The word goes, the icon stays: Ask still has to be reachable. */
   .zx-ask { padding: 6px 9px; }
   .zx-ask span { display: none; }
+  /* Same for the notice — the triangle alone still says "there is something
+     to deal with", and it keeps its title and aria-label either way. */
+  .zx-notice { padding: 6px 8px; }
+  .zx-notice span { display: none; }
 }
 
 /* --- page frame ---------------------------------------------------------- */

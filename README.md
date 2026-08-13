@@ -18,7 +18,7 @@ deck — that you have saved it. Everything below is built on the same lookup.
 | [![A review card with the answer showing](docs/shots/review.png)](docs/shots/review.png) | [![The saved library](docs/shots/library.png)](docs/shots/library.png) |
 | **Review** — cards you saved, scheduled with SM-2, with the example sentence and what each grade would do. | **Library** — every card, where it sits on the forgetting curve, and what is coming back when. |
 | [![The tutor drawer open beside an HSK guide](docs/shots/tutor.png)](docs/shots/tutor.png) | [![A generated news passage](docs/shots/news.png)](docs/shots/news.png) |
-| **Ask** — one chat that follows you from page to page, as a column of the app rather than a panel over it. | **News** — a short passage written at your level from the words you are actually studying. |
+| **Ask** — one chat that follows you from page to page, as a column of the app rather than a panel over it. | **News** — search the news or press a category, and read a passage written from the words you are actually studying. Every one is kept. |
 
 *(Fake learner, invented deck, fixture passage and conversation — but real
 pages: `node scripts/screenshots.mjs` takes these by driving the shipped code in
@@ -207,12 +207,24 @@ headless Chrome, so they cannot quietly stop being true.)*
   your deck (which words you're learning, which you keep failing, and how well
   you're recalling them), pulls *current* news headlines on the topics your
   saved words point to, and an LLM synthesizes an original passage **matched to
-  your level** — with an **Easier / Just right / Harder** control to dial it in,
-  a stretch-vocab glossary, an English summary to self-check, tap-to-hear audio,
-  and links to the real sources it drew from. **Hover any character in the passage** for the
-  same phrase-aware popup you get on any web page — definition, example
-  sentences, per-character breakdown, related words, and one-click save. See
-  [AI news digest](#ai-news-digest) for setup.
+  your level** — with a stretch-vocab glossary, an English summary to
+  self-check, tap-to-hear audio, and links to the real sources it drew from.
+  **Search it like a news site**: type a topic, a phrase or a question in either
+  language, or press one of the **categories the model suggests for you**,
+  labelled in Chinese the way a Chinese news site labels its sections. A quiet
+  **Level** control dials the next article easier or harder. **Hover any
+  character in the passage** for the same phrase-aware popup you get on any web
+  page — definition, example sentences, per-character breakdown, related words,
+  and one-click save. See [AI news digest](#ai-news-digest) for setup.
+
+- **Every article is kept (Past articles)** — generating one no longer
+  overwrites the last. Each passage is filed by the moment it was written, and
+  **Past articles** lists them under the day — Today, Yesterday, then dates —
+  with the headline, the topic you searched for and the level it was pitched
+  at. Open any of them and it comes back whole. The archive lives in this
+  browser and never leaves it.
+
+  ![Past articles, grouped by the day they were written](docs/shots/news-history.png)
 - **Themes** — classic Zhongwen yellow, light, or dark.
 - **Toggle** — click the toolbar icon to switch the dictionary on/off (badge
   shows ON). History and review pages are linked from the options page.
@@ -430,14 +442,41 @@ pairing token as sync. The Worker then: (1) asks the model to estimate your
 level as an HSK band and infer 2-4 topics + a few Chinese search queries from
 your vocabulary; (2) pulls **real, current headlines** for those queries from
 Google News RSS (keyless, done in the Worker); (3) asks the model to synthesize
-an original passage **at your level** (news vocabulary runs hard, so the prompt
-biases strongly toward "comprehensible" and targets your estimated band) — with
-a stretch-vocab glossary, an English summary, and links to the actual articles
-it drew from. The **Difficulty** control (Easier / Just right / Harder) shifts
-the target band down or up so you can tune it; changing it regenerates right
-away. No page content or browsing history is ever sent — only word statistics,
-and the source links are always the real articles used (never model-authored
-URLs).
+an original passage from them — with a stretch-vocab glossary, an English
+summary, and links to the actual articles it drew from. No page content or
+browsing history is ever sent — only word statistics, and the source links are
+always the real articles used (never model-authored URLs).
+
+**Search it, or browse it.** The page is a news reader, so the way in is a
+search box: type a topic, a phrase or a whole question, in Chinese or English,
+and that replaces the inferred themes — the planner turns what you typed into
+Chinese search terms, and the passage is written about what comes back. Above
+it sits a row of **categories the model picked for you**, labelled the way a
+Chinese news site labels its sections (科技, 环境, 体育) with a small English
+gloss underneath: 2-4 drawn from what your saved words say you care about, the
+rest the standard sections so there is always somewhere to go. Suggesting them
+is a model call, so it waits for a click like everything else here — after that
+they are cached for a week (`POST /api/news/categories`). A topic search that
+finds no current news says so and names the topic, rather than quietly handing
+you the front page under the label you asked for.
+
+**Every article is kept.** Generating one used to overwrite the last. Now each
+one is filed in `newsHistory` (chrome.storage.local, newest first, 60 deep) and
+**Past articles** lists them under the day they were written — Today,
+Yesterday, then dates — with the headline, the topic you searched for and the
+band it was written at. Open any of them and it comes back exactly as it was,
+tutor and hover-to-define included. The archive is per-browser, and never
+leaves it: the Worker still keeps only the single most recent digest per user,
+as the cache that stops a burst of clicks running up your bill.
+
+**The level dial.** The news is the news first: **Level** (Easier / Just right
+/ Harder) sits at the quiet end of the toolbar and shifts the target HSK band
+down or up for the *next* article you generate — changing it spends nothing.
+The prompt treats the band as a dial rather than a ceiling. An earlier version
+made calibration "the most important requirement" and bought readability by
+flattening the story into something that was no longer really the news; it now
+says what happened, in natural Chinese, and where a story genuinely needs a
+hard word it uses the right word and puts it in the glossary.
 
 **Why the Worker does the searching.** Grounding is done in the Worker for
 *every* provider rather than relying on a model's own web-search tool — in
@@ -731,8 +770,17 @@ composer until you send. An image on its own is a question — pressing Enter wi
 an empty box asks what it says. Nothing is uploaded anywhere: the picture is
 shrunk in the page to 1120px on its longest side and travels inside the same
 `/api/ask` request, on your own key, up to three per question. A small
-thumbnail stays with the question in the log, because "what does this say?" is
-unreadable a day later without the picture.
+thumbnail stays with the question in the log — above the bubble, the way it sat
+above the composer — because "what does this say?" is unreadable a day later
+without the picture.
+
+The picture then stays in the conversation: it travels with your follow-up
+questions until you attach a different one, so "and the second line?" is still
+about the same photograph. It used to be sent only with the turn it arrived in,
+which left the model answering, correctly and uselessly, that it could not see
+any image. If the Worker you are paired with predates images it accepts them and
+drops them, and the drawer says so rather than letting the model apologize for
+something it never received — redeploy with `wrangler deploy`.
 
 **An answer can be asked about in turn.** The reply that half-lands is exactly
 the thing you want to point at again, so the tutor's own log is selectable too:
@@ -829,8 +877,9 @@ extension/          the unpacked extension (load this folder in Chrome)
                     the curve, stage filters + TSV export
   review.html/js    spaced-repetition flashcard review + end-of-session panel
   lib/pronounce.js  pinyin-based grading for the review card check (pure; tested)
-worker/             Cloudflare Worker: /api/sync, /api/news, /api/ask,
-                    /api/placement, /api/translate + serves the PWA (D1-backed)
+worker/             Cloudflare Worker: /api/sync, /api/news,
+                    /api/news/categories, /api/ask, /api/placement,
+                    /api/translate + serves the PWA (D1-backed)
 pwa/                the phone app: review, word list, tap-to-define sheet,
                     pairing (lib/ and data/ are copied from extension/ by
                     scripts/sync-shared.mjs — edit there; data/ is gitignored)

@@ -1,4 +1,8 @@
 import { DEFAULT_SERVER_URL, getAiKey, getSyncMeta, newToken, pairUrl } from './lib/sync.js';
+import {
+  AI_BAD_KEY, AI_NO_KEY, AI_NO_QUOTA, AI_NOTICES, AI_UNPAIRED,
+  clearAiFailure, getAiStatus, onAiStatus,
+} from './lib/aistatus.js';
 import { DEFAULT_LIMITS } from './lib/srs.js';
 import { mountShell } from './lib/shell.js';
 import { onHanziPref } from './lib/hanzi.js';
@@ -134,10 +138,32 @@ const aiKeyStatus = document.getElementById('aiKeyStatus');
 const maskKey = (key) =>
   (key.length <= 12 ? key : `${key.slice(0, 6)}…${key.slice(-4)}`);
 
+// The field says what the app knows: not only whether a key is saved, but
+// whether the provider has since refused it. A key that looks perfectly fine
+// here while every AI feature fails is the state this page used to show.
 async function renderAiKey() {
   const key = await getAiKey();
+  const status = await getAiStatus();
   aiKeyEl.value = key;
-  aiKeyStatus.textContent = key ? `Saved (${maskKey(key)})` : 'Not set — AI features are off';
+  aiKeyStatus.classList.toggle('warn',
+    [AI_BAD_KEY, AI_NO_KEY, AI_NO_QUOTA].includes(status.code));
+  if (status.code === AI_BAD_KEY || status.code === AI_NO_QUOTA) {
+    aiKeyStatus.textContent = `${AI_NOTICES[status.code].label} — ${AI_NOTICES[status.code].detail}`;
+    return;
+  }
+  if (!key) {
+    // A deployment that pays for its own calls does not need one, and telling
+    // someone their features are off when they are not is worse than silence.
+    // With no server paired there is nothing to have asked, so it says the
+    // neutral thing rather than guessing either way.
+    aiKeyStatus.textContent = status.code === AI_NO_KEY
+      ? 'Not set — the tutor, news, placement and translation are off until you add one'
+      : status.code === AI_UNPAIRED
+        ? 'Not set — add one to turn on the tutor, news, placement and translation'
+        : 'Not set — this server supplies its own key, so the AI features still work';
+    return;
+  }
+  aiKeyStatus.textContent = `Saved (${maskKey(key)})`;
 }
 
 aiKeyEl.addEventListener('change', async () => {
@@ -145,15 +171,40 @@ aiKeyEl.addEventListener('change', async () => {
   // Only shapes the Worker will accept, caught here so the first failure is a
   // sentence in the options page rather than a 400 inside the news tab.
   if (key && !/^sk-[A-Za-z0-9_-]{16,256}$/.test(key) && !/^[0-9a-f-]{8,64}:[0-9a-f]{16,64}$/i.test(key)) {
+    aiKeyStatus.classList.add('warn');
     aiKeyStatus.textContent = 'That does not look like an OpenAI (sk-…) or fal.ai key';
     return;
   }
   await chrome.storage.local.set({ aiKey: key });
+  // Whatever the provider said about the last key is not evidence about this
+  // one; leaving it up would show "rejected" over a key nobody has tried yet.
+  await clearAiFailure();
   await renderAiKey();
   flashSaved();
 });
 
 renderAiKey();
+onAiStatus(renderAiKey);
+
+// Arriving from the navbar's notice, which names the thing to fix rather than
+// the page it is on. Land on that section with the field focused — the point
+// of pressing it was to deal with what it said.
+function goToTarget() {
+  const target = document.getElementById(location.hash.slice(1));
+  if (!target) return;
+  target.scrollIntoView({ block: 'start', behavior: 'instant' });
+  target.classList.add('called-out');
+  setTimeout(() => target.classList.remove('called-out'), 2000);
+  if (target.id === 'ai') aiKeyEl.focus();
+}
+addEventListener('hashchange', goToTarget);
+// Not during module execution: a focus() call made before the page has laid
+// itself out is dropped silently, with no error and no focus event, so the
+// learner lands on the right section with the cursor nowhere. One frame after
+// load is late enough to take and early enough that nobody sees the page
+// before it moves.
+if (document.readyState === 'complete') requestAnimationFrame(goToTarget);
+else addEventListener('load', () => requestAnimationFrame(goToTarget));
 
 // ---------------------------------------------------------------------------
 // Phone sync pairing

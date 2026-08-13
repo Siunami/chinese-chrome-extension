@@ -369,6 +369,77 @@ for (const [page, ready, active] of [
   tab.close();
 }
 
+// --- the API key notice ----------------------------------------------------
+//
+// Four features run on a model, and each used to meet a missing key by failing
+// inside itself with a sentence only that page showed. The bar carries it now,
+// and — the part worth a test — it stays quiet for a deployment that pays for
+// its own calls, because nagging somebody to paste a key they do not need is
+// worse than saying nothing.
+
+const keyless = await openPage('wordlist.html');
+await check('a paired browser with no API key is told so, in the bar', async () => {
+  await keyless.waitFor('!!document.querySelector(".zx-header")', 'the navbar');
+  await keyless.evalJs('chrome.storage.local.remove(["aiKey", "aiState", "aiHealth"])');
+  await keyless.evalJs(`chrome.storage.local.set({ syncMeta: {
+    token: 'smoketokensmoketokensmoketoken', serverUrl: location.origin, cursor: 0, lastPushAt: 0 } })`);
+  await keyless.waitFor('!document.querySelector(".zx-notice").hidden', 'the notice');
+  assert.match(
+    await keyless.evalJs('document.querySelector(".zx-notice-text").textContent'),
+    /API key/);
+  // It goes to the field, not to the top of a six-section settings page.
+  assert.match(await keyless.evalJs('document.querySelector(".zx-notice").getAttribute("href")'),
+    /options\.html#ai$/);
+});
+await keyless.shot('ai-notice');
+
+await check('pasting a key puts the notice away without a reload', async () => {
+  await keyless.evalJs(`chrome.storage.local.set({ aiKey: 'sk-${'x'.repeat(40)}' })`);
+  await keyless.waitFor('document.querySelector(".zx-notice").hidden', 'the notice to go');
+});
+
+await check('a rejected key raises the notice on every page, not only the one that failed', async () => {
+  // The state is the app's, not the failing page's — which is the whole reason
+  // it lives in lib/aistatus.js rather than in whichever tab asked first.
+  await keyless.evalJs(
+    `chrome.storage.local.set({ aiState: { code: 'bad-key', at: Date.now(), detail: 'refused' } })`);
+  await keyless.waitFor('!document.querySelector(".zx-notice").hidden', 'the notice');
+  assert.match(
+    await keyless.evalJs('document.querySelector(".zx-notice-text").textContent'), /rejected/);
+
+  const elsewhere = await openPage('hsk.html');
+  await elsewhere.waitFor('!document.querySelector(".zx-notice").hidden',
+    'the notice on a page that never made a request');
+  assert.deepEqual(elsewhere.errors, []);
+  elsewhere.close();
+});
+
+await check('the options page lands on the AI key field when sent there', async () => {
+  const opts = await openPage('options.html#ai');
+  await opts.waitFor('!!document.getElementById("aiKey")', 'the options page');
+  await opts.waitFor('document.querySelector("#ai").classList.contains("called-out")',
+    'the section to be called out');
+  assert.equal(await opts.evalJs('document.activeElement.id'), 'aiKey',
+    'landed on the section but not on the field');
+  // And it says what the app knows about the key, not just that one is saved.
+  await opts.waitFor('/rejected/i.test(document.getElementById("aiKeyStatus").textContent)',
+    'the rejection to be explained where it is fixed');
+  await opts.shot('ai-notice-options');
+  assert.deepEqual(opts.errors, []);
+  opts.close();
+});
+
+await check('a deployment that supplies its own key raises nothing', async () => {
+  await keyless.evalJs('chrome.storage.local.remove(["aiKey", "aiState"])');
+  await keyless.evalJs(`chrome.storage.local.set({ aiHealth: {
+    at: Date.now(), serverUrl: location.origin, configured: true, requiresUserKey: false } })`);
+  await keyless.waitFor('document.querySelector(".zx-notice").hidden',
+    'the notice to stay down for a server that pays its own way');
+});
+await check('wordlist.html raised no page errors with the notice', () =>
+  assert.deepEqual(keyless.errors, []));
+keyless.close();
+
 // --- the placement interview, start to report ------------------------------
 //
 // The harness plays a learner who is comfortable to HSK 4 and lost above it
@@ -436,6 +507,14 @@ await check('corrections from the interview can be saved as cards', async () => 
     + `.then(r => (r.wordlist || []).length > ${before})`,
     'the correction to reach the deck');
   assert.equal(await place.evalJs('document.querySelector(".fix .zwe-save").textContent'), '✓');
+
+  // Put it back. The deck is shared with every check after this one, and a card
+  // left behind here moves whatever they count.
+  await place.evalJs('document.querySelector(".fix .zwe-save").click()');
+  await place.waitFor(
+    'chrome.storage.local.get("wordlist")'
+    + `.then(r => (r.wordlist || []).length === ${before})`,
+    'the correction to come back out');
 });
 
 await check('the interview sent the rubric, the deck and the transcript', async () => {
@@ -592,12 +671,74 @@ dash.close();
 
 // Same bug class as the quote chip: a `display` rule beating the hidden
 // attribute left this control permanently on screen.
+//
+// The attribute is set here rather than waited for. Whether the toolbar hides
+// it of its own accord depends on how many cards the checks before this one
+// happened to leave in the shared deck and whether sync was switched on, which
+// made this a race decided by the order of everything above. The bug it guards
+// is a CSS rule beating `hidden`, so it sets `hidden` and looks at the pixels.
 const newsTab = await openPage('news.html');
-await check('news keeps its difficulty control hidden until there is a digest', async () => {
+await check('the difficulty control is really hidden when it is hidden', async () => {
   await newsTab.waitFor('!!document.getElementById("app")', 'the digest container');
-  assert.equal(await newsTab.evalJs(
-    'getComputedStyle(document.getElementById("difficultyLabel")).display'), 'none');
+  assert.equal(await newsTab.evalJs(`(() => {
+    const el = document.getElementById('difficultyLabel');
+    el.hidden = true;
+    return getComputedStyle(el).display;
+  })()`), 'none');
 });
+
+// Articles are kept rather than replaced, so the page has to be able to show
+// you the ones it wrote before — including the one it wrote yesterday, which is
+// what the day headings are for.
+const digest = (title, extra = {}) => ({
+  level: 'HSK 3', targetHsk: 3, topics: ['环境'], title,
+  article: '这个星期，很多人一起去海边捡垃圾。\n\n他们说，海水比去年干净了一些。',
+  englishSummary: 'Volunteers cleaned a beach.',
+  glossary: [{ word: '垃圾', pinyin: 'lā jī', meaning: 'rubbish' }],
+  sources: [], ...extra,
+});
+const HISTORY = [
+  { id: '2', generatedAt: Date.now() - 3 * 60 * 60 * 1000, data: digest('海边的塑料越来越少') },
+  {
+    id: '1',
+    generatedAt: Date.now() - 27 * 60 * 60 * 1000,
+    data: digest('新的地铁线开始试运行', { topic: { label: '科技', query: '科技 新闻' } }),
+  },
+];
+await check('news opens on the last article and offers the ones before it', async () => {
+  await newsTab.evalJs(`chrome.storage.local.set({
+    newsHistory: ${JSON.stringify(HISTORY)},
+    wordlist: ${JSON.stringify(Array.from({ length: 6 }, (_, i) => ({
+    cardType: 'word', simp: '朋友', trad: '朋友', pinyin: 'péng you', tones: '2,0',
+    defs: 'friend', savedAt: i + 1, lastSavedAt: i + 1, touches: 1, srs: null,
+  })))},
+    syncMeta: { token: 'smoketokensmoketokensmoketoken', serverUrl: location.origin,
+                cursor: 0, lastPushAt: 0 } })`);
+  await newsTab.evalJs('location.reload()');
+  await newsTab.waitFor('!!document.querySelector(".article p")', 'the newest article');
+  assert.match(await newsTab.evalJs('document.querySelector(".headline h2").textContent'),
+    /海边的塑料/, 'the page opened on something other than the most recent article');
+  await newsTab.waitFor('!document.getElementById("history").hidden', 'the archive button');
+  assert.match(await newsTab.evalJs('document.getElementById("history").textContent'),
+    /\(2\)/, 'the archive button does not say how much is in it');
+});
+await check('the archive lists past articles under the day they were written', async () => {
+  await newsTab.evalJs('document.getElementById("history").click()');
+  await newsTab.waitFor('document.querySelectorAll(".past").length === 2', 'both articles');
+  const days = await newsTab.evalJs('[...document.querySelectorAll(".day")].map(d => d.textContent)');
+  assert.deepEqual(days, ['Today', 'Yesterday'],
+    `articles should be grouped by day; got ${days.join(', ')}`);
+  // The topic a search asked for travels with the article, so the archive can
+  // say which of these you went looking for.
+  assert.equal(await newsTab.evalJs('document.querySelectorAll(".past .chip.asked").length'), 1);
+});
+await check('opening a past article brings it back', async () => {
+  await newsTab.evalJs('[...document.querySelectorAll(".past")].at(-1).click()');
+  await newsTab.waitFor('!!document.querySelector(".article p")', 'the older article');
+  assert.match(await newsTab.evalJs('document.querySelector(".headline h2").textContent'),
+    /地铁/, 'clicking a row in the archive did not open that article');
+});
+await check('news.html raised no page errors', () => assert.deepEqual(newsTab.errors, []));
 newsTab.close();
 
 // The library is the surface that had no hover at all before.
@@ -1104,11 +1245,39 @@ await check('a pasted image is attached, shown with the question, and sent', asy
     'the tray to empty on send');
   await review.waitFor('document.querySelectorAll(".tutor .msg.user .shots img").length > 0',
     'the image kept with the question');
+  // Above the bubble, not inside it: a picture and the sentence asking about it
+  // are two things.
+  assert.equal(await review.evalJs(
+    '!!document.querySelector(".tutor .msg.user .bubble .shots")'), false,
+  'the image was drawn inside the message bubble');
+  await review.shot('tutor-image-sent');
   const asked = await (await fetch(`${base}/__lastask`)).json();
   assert.equal(asked.images?.length, 1, 'the image never reached the request');
   assert.equal(asked.images[0].mime, 'image/jpeg', 'the image was not shrunk before sending');
   assert.ok(asked.images[0].data.length > 100, 'the image data is empty');
   assert.ok(!asked.images[0].data.startsWith('data:'), 'the data: prefix was sent as payload');
+});
+
+// The bug this was reported as: the model said it could not see any image,
+// because a follow-up question sent none. A picture belongs to the
+// conversation, not to the one turn it arrived in.
+await check('a follow-up question still carries the picture', async () => {
+  await review.evalJs(`(() => {
+    document.getElementById('question').value = 'And the second line?';
+    document.getElementById('composer').requestSubmit();
+  })()`);
+  await review.waitFor(
+    'document.querySelectorAll(".tutor .msg.user").length > 1', 'the follow-up');
+  await review.settle(400);
+  const asked = await (await fetch(`${base}/__lastask`)).json();
+  assert.equal(asked.question, 'And the second line?');
+  assert.equal(asked.images?.length, 1, 'the picture was dropped after one turn');
+  assert.equal(asked.imagesFromEarlier, true, 'the model was not told it is the earlier picture');
+  // Only the turn it was attached to shows it in the log, though — a thumbnail
+  // repeated under every follow-up would read as sending it again.
+  assert.equal(await review.evalJs(
+    'document.querySelectorAll(".tutor .msg.user .shots").length'), 1,
+  'the thumbnail was repeated under the follow-up');
 });
 
 // One chat, kept and navigable. It used to be a different thread per card,

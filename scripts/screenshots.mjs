@@ -120,6 +120,34 @@ const DIGEST = {
   ],
 };
 
+// Yesterday's article, which was searched for rather than inferred — so the
+// archive shows both kinds of row.
+const OLDER_DIGEST = {
+  level: 'HSK 4',
+  targetHsk: 4,
+  topic: { label: '科技', query: '科技 新闻', english: 'Technology' },
+  topics: ['科技'],
+  title: '新的地铁线开始试运行',
+  titlePinyin: 'xīn de dì tiě xiàn kāi shǐ shì yùn xíng',
+  article: '这条地铁线一共有十二个站，从城东一直开到城西。\n\n'
+    + '工作人员说，正式通车以后，很多人上班的时间会少半个小时。',
+  englishSummary: 'A new twelve-stop metro line has begun test runs across the city.',
+  glossary: [
+    { word: '试运行', pinyin: 'shì yùn xíng', meaning: 'trial run' },
+    { word: '通车', pinyin: 'tōng chē', meaning: 'to open to traffic' },
+  ],
+  sources: [{ title: 'New metro line begins testing', url: 'https://example.com/metro' }],
+};
+
+// The chips above the search box, as the model would have suggested them.
+const CATEGORIES = [
+  { label: '科技', pinyin: 'kē jì', english: 'Technology', query: '科技 新闻' },
+  { label: '环境', pinyin: 'huán jìng', english: 'Environment', query: '环境 新闻' },
+  { label: '健康', pinyin: 'jiàn kāng', english: 'Health', query: '健康 新闻' },
+  { label: '国际', pinyin: 'guó jì', english: 'World', query: '国际 新闻' },
+  { label: '文化', pinyin: 'wén huà', english: 'Culture', query: '文化 新闻' },
+];
+
 // One conversation, the shape the drawer stores them in.
 const CHAT = {
   id: 'cshot1',
@@ -143,9 +171,17 @@ const CHAT = {
   ],
 };
 
+// Two articles in the archive, since keeping them is the point of it: the one
+// on screen, and an older one that was searched for by topic.
+const HISTORY = [
+  { id: 'shot2', generatedAt: now - 2 * 60 * 60 * 1000, data: DIGEST },
+  { id: 'shot1', generatedAt: now - 27 * 60 * 60 * 1000, data: OLDER_DIGEST },
+];
+
 const seed = (extra = {}) => JSON.stringify({
   wordlist: WORDLIST,
-  newsDigest: { fetchedAt: now - 2 * 60 * 60 * 1000, data: DIGEST },
+  newsHistory: HISTORY,
+  newsCategories: { fetchedAt: now - 60 * 60 * 1000, items: CATEGORIES },
   newsDifficulty: 'normal',
   tutorChatLog: [CHAT],
   // The tutor answers on a private token, so seed one or the drawer shows its
@@ -169,7 +205,13 @@ async function shoot(page, name, prepare, size = WIDE, extra = {}) {
   await tab.evalJs(`chrome.storage.local.set(${seed(extra)})`);
   await tab.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
   await tab.setViewport(size.width, size.height, 2);
+  // Stamp the outgoing document before reloading. A reload does not commit
+  // synchronously, so `prepare`'s first wait can be satisfied by the page that
+  // is on its way out — and the line after it then runs against the new one
+  // before it has a <body>, which is a null-property crash rather than a wait.
+  await tab.evalJs('window.__stale = true');
   await tab.evalJs('location.reload()');
+  await tab.waitFor('!window.__stale && !!document.body', 'the reloaded page');
   await prepare(tab);
   await tab.settle();
   const file = join(outDir, `${name}.png`);
@@ -238,6 +280,13 @@ await shoot('hsk.html', 'tutor', async (tab) => {
 // The generated news passage, with the stretch vocabulary under it.
 await shoot('news.html', 'news', async (tab) => {
   await tab.waitFor('!!document.querySelector(".article p")', 'the passage');
+});
+
+// The archive: every article the page has written, under the day it wrote it.
+await shoot('news.html', 'news-history', async (tab) => {
+  await tab.waitFor('!!document.querySelector(".article p")', 'the passage');
+  await tab.evalJs('document.getElementById("history").click()');
+  await tab.waitFor('document.querySelectorAll(".past").length > 1', 'the archive');
 });
 
 // The dashboard the New Tab page opens to.

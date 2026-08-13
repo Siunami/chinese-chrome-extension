@@ -25,6 +25,19 @@
     output { min-width: 36px; font-variant-numeric: tabular-nums; color: var(--zx-muted); }
     .note { color: var(--zx-muted); font-size: 12.5px; margin-top: 4px; }
     .note a { color: var(--zx-red); }
+    /* A key the provider has refused, or one this deployment needs and does not
+       have. The same amber the navbar's notice uses, so the thing you pressed
+       and the thing you landed on are recognisably the same problem. */
+    .note.warn { color: #8a5d00; font-weight: 600; }
+    /* Arriving from that notice: hold the section for a moment so it is
+       obvious which of six you were sent to. */
+    .section.called-out {
+      border-radius: 10px; box-shadow: 0 0 0 2px #e6c98a;
+      transition: box-shadow 0.4s ease;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .section.called-out { transition: none; }
+    }
     code {
       padding: 2px 7px; border: 1px solid var(--zx-line); border-radius: 6px;
       background: #faf8f2; font-size: 12.5px;
@@ -142,7 +155,7 @@
        memory. The end-of-session screen can always pull more forward.</p>
   </div>
 
-  <div class="section">
+  <div class="section" id="ai">
     <h2>AI features</h2>
     <p class="note section-note">The news digest, the tutor, and English backs for
        sentences the dictionary cannot translate are written by a model on your own
@@ -163,7 +176,7 @@
        hourly caps. Leave it empty to keep everything off.</p>
   </div>
 
-  <div class="section">
+  <div class="section" id="sync">
     <h2>Phone sync</h2>
     <div id="syncSetup" hidden>
       <p class="note section-note">Review your flashcards on your phone. Cards sync

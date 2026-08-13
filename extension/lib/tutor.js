@@ -17,7 +17,8 @@
 // passage is then tracked with the CSS Custom Highlight API so it never
 // disturbs the hoverable spans underneath.
 
-import { DEFAULT_SERVER_URL, aiHeaders, getSyncMeta, newToken } from './sync.js';
+import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './sync.js';
+import { postAi } from './aistatus.js';
 import { icon } from './icons.js';
 import { announceTutor, getAskOpen, onAskOpen, setAskOpen } from './tutorstate.js';
 
@@ -197,18 +198,21 @@ const TUTOR_CSS = `
   }
   .tutor button.starter:hover { border-color: #c9b08a; background: #fffdf3; }
 
-  /* Attached images. They sit above the box you are typing in and lean on it,
-     which is the whole reason they read as "attached to this message" rather
-     than as something already sent — the tray overlaps the field's top edge and
-     the chips tilt alternately, so two of them look tossed onto the pile rather
-     than laid out in a row. Hovering one straightens it and reveals its ✕. */
+  /* Attached images, after the message-bar pattern in the design library.
+     Every tile is the same height and they bottom-align, so the pile dips into
+     the top of the field by exactly its first third and the rest stands clear
+     above it — attached to the message you are writing, not sent. The field
+     grows its own top padding by that third, which is the part that stops a
+     picture from landing on top of the words. Alternating tilt so a second one
+     reads as tossed onto the pile rather than filed beside it; hovering one
+     straightens it and reveals its ✕. */
   .tutor-tray {
-    position: absolute; left: 6px; right: 6px; bottom: calc(100% - 16px);
-    display: flex; align-items: flex-end; gap: 8px; pointer-events: none;
+    position: absolute; left: 8px; right: 8px; bottom: calc(100% - var(--overlap));
+    display: flex; align-items: flex-end; gap: 10px; pointer-events: none;
   }
   .tutor-tray:empty { display: none; }
   .tutor-chip {
-    position: relative; flex: none; pointer-events: auto;
+    position: relative; flex: none; height: var(--tile-h); pointer-events: auto;
     opacity: 0; transform: translateY(10px) rotate(var(--tilt, 0deg));
     transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.3, 0.7, 0.3, 1);
   }
@@ -216,9 +220,9 @@ const TUTOR_CSS = `
   .tutor-chip.in:hover { transform: translateY(-2px) rotate(0deg) scale(1.03); z-index: 2; }
   .tutor-chip.out { opacity: 0; transform: translateY(8px) scale(0.92); }
   .tutor-chip img {
-    display: block; width: 74px; height: 54px; object-fit: cover;
-    border: 2px solid #fff; border-radius: 9px;
-    box-shadow: 0 2px 8px rgba(60, 48, 24, 0.22);
+    display: block; height: 100%; width: 78px; object-fit: cover;
+    border: 2px solid #fff; border-radius: 10px;
+    box-shadow: 0 3px 10px rgba(60, 48, 24, 0.22);
   }
   .tutor .tutor-chip button.drop-shot {
     position: absolute; top: -6px; right: -6px; width: 18px; height: 18px;
@@ -230,11 +234,18 @@ const TUTOR_CSS = `
   .tutor-chip:hover button.drop-shot, .tutor .tutor-chip button.drop-shot:focus-visible {
     opacity: 1; transform: scale(1);
   }
-  /* Thumbnails of what was sent, kept with the question in the log. */
-  .tutor .msg .shots { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px; }
+  /* What was sent, kept with the question in the log — above the bubble and
+     outside it, the way it sat above the composer. A picture and the sentence
+     asking about it are two things, and putting them in one tinted box makes
+     the picture look like part of the sentence. */
+  .tutor .msg .shots {
+    display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px;
+    margin-bottom: 5px;
+  }
   .tutor .msg .shots img {
-    width: 62px; height: 46px; object-fit: cover; border-radius: 7px;
-    border: 1px solid rgba(60, 48, 24, 0.18);
+    display: block; width: 84px; height: 62px; object-fit: cover;
+    border: 2px solid #fff; border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(60, 48, 24, 0.18);
   }
 
   /* Composer. One field holding the quoted passage, the question and the send
@@ -246,10 +257,16 @@ const TUTOR_CSS = `
   }
   .tutor-composer[hidden] { display: none !important; }
   .tutor-field {
+    --tile-h: 54px;
+    --overlap: calc(var(--tile-h) / 3); /* the first third dips into the field */
     position: relative;
-    padding: 7px 8px 8px; border: 1px solid #ddd5c4; border-radius: 12px;
-    background: #fff; transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    padding: 6px; border: 1px solid #ddd5c4; border-radius: 14px;
+    background: #fff;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease, padding-top 0.15s ease;
   }
+  /* Make room for the third of each tile that dips in, so a picture never lands
+     on the words. */
+  .tutor-field.has-shots { padding-top: calc(var(--overlap) + 8px); }
   .tutor-field:focus-within {
     border-color: #c9b08a; box-shadow: 0 0 0 3px rgba(201, 165, 92, 0.16);
   }
@@ -278,22 +295,29 @@ const TUTOR_CSS = `
     display: block; fill: none; stroke: currentColor; stroke-width: 1.6;
     stroke-linecap: round;
   }
+  /* One row: attach, write, send. The box used to be three stacked strips with
+     a line of instructions along the bottom — "Enter to send · paste an image"
+     — which is the interface explaining itself instead of being obvious. The
+     picture button says you can attach a picture; the box says what to ask. */
+  .tutor-row { display: flex; align-items: flex-end; gap: 2px; }
   .tutor textarea {
-    display: block; width: 100%; height: 54px; padding: 2px 3px; border: 0;
-    background: none; color: #222; font: inherit; font-size: 13.5px;
-    line-height: 1.5; resize: none;
+    flex: 1; min-width: 0; display: block; height: 30px; max-height: 124px;
+    padding: 6px 4px; border: 0; background: none; color: #222; font: inherit;
+    font-size: 13.5px; line-height: 18px; resize: none;
+    /* It grows as you type and scrolls at the ceiling; a scrollbar inside a
+       28px-tall box is all bar and no thumb. */
+    scrollbar-width: none;
   }
+  .tutor textarea::-webkit-scrollbar { width: 0; height: 0; }
   .tutor textarea:focus { outline: none; }
   .tutor textarea::placeholder { color: #b0a996; }
-  .tutor-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
-  .tutor-row .hint { flex: 1; color: #b0a996; font-size: 11px; }
   .tutor button.send {
-    padding: 5px 14px; border: 1px solid #c9b08a; border-radius: 999px;
+    flex: none; padding: 6px 13px; border: 1px solid #c9b08a; border-radius: 999px;
     background: #fdf6c7; color: #7f1920; font: inherit; font-size: 12.5px;
-    font-weight: 650; cursor: pointer;
+    font-weight: 650; cursor: pointer; transition: background 0.12s ease, opacity 0.12s ease;
   }
   .tutor button.send:hover:not(:disabled) { background: #fdf0a8; }
-  .tutor button.send:disabled { opacity: 0.45; cursor: default; }
+  .tutor button.send:disabled { opacity: 0.4; cursor: default; }
 
   /* Without a shell to sit in there is nothing to push, so the fixed drawer
      narrows the document instead — the fallback path, and the only way to keep
@@ -454,17 +478,8 @@ async function prepareShot(blob) {
   }
 }
 
-async function postAsk(meta, payload) {
-  const res = await fetch(`${meta.serverUrl.replace(/\/+$/, '')}/api/ask`, {
-    method: 'POST',
-    headers: await aiHeaders(meta),
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok || !data || data.error) {
-    throw new Error(data?.detail || data?.error || `server error (http ${res.status})`);
-  }
-  return data;
+function postAsk(meta, payload) {
+  return postAi(meta, '/api/ask', payload);
 }
 
 // Mount a tutor panel.
@@ -536,8 +551,11 @@ export function createTutor(options) {
 
   const questionEl = el('textarea');
   questionEl.id = 'question';
-  questionEl.rows = 3;
-  questionEl.placeholder = 'Ask about a word, a grammar point, or usage…';
+  questionEl.rows = 1;
+  // Short enough to sit on one line in a 260px drawer. The picture button
+  // beside it is what says a picture can go in here; the instruction line that
+  // used to spell that out was the interface explaining itself.
+  questionEl.placeholder = 'Ask anything…';
   const row = el('div', 'tutor-row');
   const attachEl = iconButton('tutor-icon', 'image', 'Attach an image', 15);
   attachEl.id = 'tutorAttach';
@@ -550,7 +568,7 @@ export function createTutor(options) {
   const sendEl = el('button', 'send', 'Ask');
   sendEl.id = 'send';
   sendEl.type = 'submit';
-  row.append(attachEl, el('span', 'hint', 'Enter to send · paste an image'), sendEl, fileEl);
+  row.append(attachEl, questionEl, sendEl, fileEl);
   // The quoted passage, the question and the send row are one field: they are
   // one thing you are composing, and drawing them as three stacked boxes in a
   // 370px drawer was most of what made the bottom of the panel look busy.
@@ -558,7 +576,9 @@ export function createTutor(options) {
   const trayEl = el('div', 'tutor-tray');
   trayEl.id = 'tutorTray';
   const fieldEl = el('div', 'tutor-field');
-  fieldEl.append(trayEl, quoteChipEl, questionEl, row);
+  // The question box belongs to the row, between the two buttons — appending it
+  // to the field as well would quietly move it back out of the row.
+  fieldEl.append(trayEl, quoteChipEl, row);
   composerEl.append(fieldEl);
 
   root.append(head, logEl, composerEl);
@@ -573,6 +593,10 @@ export function createTutor(options) {
   let history = chat.messages;
   let quote = null;      // { text, section, context }
   let shots = [];        // images attached to the question being written
+  // The last set actually sent, at full size, kept for the rest of the sitting
+  // so follow-up questions are still about the same picture. Not stored: only
+  // the small thumbnails go to disk (see prune()).
+  let sentShots = [];
   let busy = false;
   let viewingHistory = false; // the list of past chats is up instead of the log
   let available = startAvailable; // the host page can hide the whole thing
@@ -583,21 +607,28 @@ export function createTutor(options) {
 
   let shotSeq = 0;
 
+  // The field reserves room for the third of the tiles that dips into it.
+  function paintTray() {
+    fieldEl.classList.toggle('has-shots', !!trayEl.childElementCount);
+    syncSend();
+  }
+
   function dropShot(id) {
     const chip = trayEl.querySelector(`[data-shot="${id}"]`);
     shots = shots.filter((s) => s.id !== id);
     if (!chip) return;
     chip.classList.remove('in');
     chip.classList.add('out');
-    chip.addEventListener('transitionend', () => chip.remove(), { once: true });
-    setTimeout(() => chip.remove(), 400); // in case nothing transitions
+    const gone = () => { chip.remove(); paintTray(); };
+    chip.addEventListener('transitionend', gone, { once: true });
+    setTimeout(gone, 400); // in case nothing transitions
     syncSend();
   }
 
   function clearShots() {
     shots = [];
     trayEl.replaceChildren();
-    syncSend();
+    paintTray();
   }
 
   async function attachShots(blobs) {
@@ -621,7 +652,7 @@ export function createTutor(options) {
       chip.append(img, remove);
       trayEl.append(chip);
       requestAnimationFrame(() => chip.classList.add('in'));
-      syncSend();
+      paintTray();
     }
     if (shots.length) open();
   }
@@ -768,8 +799,10 @@ export function createTutor(options) {
     const wrap = el('div', `msg ${kind}`);
     if (msg.role === 'user') {
       const bubble = el('div', 'bubble');
-      // What was attached stays with the question: "what does this say?" is
-      // unreadable a day later without the picture it was asked about.
+      // What was attached stays with the question — "what does this say?" is
+      // unreadable a day later without the picture — but above the bubble
+      // rather than inside it, the way it sat above the box you typed in. A
+      // picture and the sentence asking about it are two things.
       if (msg.images?.length) {
         const shelf = el('div', 'shots');
         for (const src of msg.images) {
@@ -778,7 +811,7 @@ export function createTutor(options) {
           img.alt = 'Image attached to this question';
           shelf.append(img);
         }
-        bubble.append(shelf);
+        wrap.append(shelf);
       }
       if (msg.quote) bubble.append(el('div', 'quoted', msg.quote));
       bubble.append(el('div', null, msg.content));
@@ -851,6 +884,9 @@ export function createTutor(options) {
     history = chat.messages;
     viewingHistory = false;
     clearQuote();
+    // The picture belonged to the conversation you just left.
+    sentShots = [];
+    clearShots();
     renderChat();
     questionEl.focus();
   }
@@ -861,6 +897,8 @@ export function createTutor(options) {
     history = chat.messages;
     viewingHistory = false;
     clearQuote();
+    sentShots = [];
+    clearShots();
     renderChat();
     questionEl.focus();
   }
@@ -885,6 +923,7 @@ export function createTutor(options) {
         btn.type = 'button';
         btn.addEventListener('click', () => {
           questionEl.value = text;
+          growQuestion();
           composerEl.requestSubmit();
         });
         list.append(btn);
@@ -939,16 +978,26 @@ export function createTutor(options) {
     const meta = await getSyncMeta();
     if (!meta || !meta.token || !meta.serverUrl) { showSetup(); return; }
 
-    const attached = shots;
+    // A picture stays in the conversation, not just in the turn it arrived in.
+    // "Do you know what I just pasted?" is a normal second question, and
+    // sending only this turn's attachments meant the model truthfully answered
+    // that it could not see anything — the picture had been dropped on the
+    // floor after one exchange. The last set travels with every question until
+    // a new one replaces it.
+    const carried = !shots.length && sentShots.length;
+    const attached = shots.length ? shots : sentShots;
     const asked = { role: 'user', content: question };
     if (quote) asked.quote = quote.text;
-    if (attached.length) asked.images = attached.map((s) => s.thumb);
+    if (shots.length) asked.images = shots.map((s) => s.thumb);
 
     const where = context() || {};
     const payload = {
       question,
       selection: quote?.text || '',
       images: attached.map((s) => ({ mime: s.mime, data: s.data })),
+      // So the model can say "the picture you sent earlier" rather than
+      // describing it as though it had just arrived.
+      imagesFromEarlier: !!carried,
       context: {
         ...where,
         // A highlighted passage overrides the page's own description of what
@@ -972,13 +1021,28 @@ export function createTutor(options) {
     busy = true;
     sendEl.disabled = true;
     questionEl.value = '';
+    growQuestion();
     clearQuote();
+    if (shots.length) sentShots = shots;
     clearShots();
 
     let answer;
+    let stale = null;
     try {
       const data = await postAsk(meta, payload);
       answer = { role: 'assistant', content: data.answer || '(no answer)' };
+      // A Worker deployed before pictures existed accepts the request and
+      // ignores them, and the model then says, correctly and uselessly, that it
+      // cannot see any image. Say which end is at fault instead: the answer
+      // count comes back from a Worker that took them.
+      if (attached.length && data.sawImages === undefined) {
+        stale = {
+          role: 'error',
+          content: 'That answer did not include your picture: the Worker this '
+            + 'extension is paired with is an older build that drops images. '
+            + 'Redeploy it (wrangler deploy) and ask again.',
+        };
+      }
     } catch (err) {
       answer = { role: 'error', content: `Could not answer that: ${err.message}` };
     }
@@ -986,6 +1050,7 @@ export function createTutor(options) {
     syncSend();
     pending?.remove();
     asking.messages.push(answer);
+    if (stale) asking.messages.push(stale);
     // A failed question is still worth keeping — it is the one you will want to
     // retry — but it should not be what the chat is named after.
     await writeChat(asking);
@@ -1007,7 +1072,25 @@ export function createTutor(options) {
   function syncSend() {
     sendEl.disabled = busy || !(questionEl.value.trim() || shots.length);
   }
-  questionEl.addEventListener('input', syncSend);
+
+  // The box is one line until there is more than one line to show, then grows
+  // to a ceiling and scrolls — so a long question is written in a box the size
+  // of the question rather than in a three-line well that is mostly empty.
+  const QUESTION_MAX = 124;
+  function growQuestion() {
+    questionEl.style.height = 'auto';
+    const wanted = questionEl.scrollHeight;
+    // A drawer that has never been opened has no layout, and scrollHeight is 0
+    // — measuring it there would pin the box to nothing and leave the
+    // placeholder hanging out of the bottom of the field. Leave the stylesheet
+    // to size it until there is something to measure.
+    if (!wanted) { questionEl.style.height = ''; return; }
+    questionEl.style.height = `${Math.min(wanted, QUESTION_MAX)}px`;
+    questionEl.style.overflowY = wanted > QUESTION_MAX ? 'auto' : 'hidden';
+  }
+
+  questionEl.addEventListener('input', () => { growQuestion(); syncSend(); });
+  growQuestion();
   syncSend();
 
   questionEl.addEventListener('keydown', (e) => {
@@ -1063,6 +1146,8 @@ export function createTutor(options) {
     root.hidden = !showing;
     root.style.marginRight = '0px';
     document.documentElement.classList.toggle('tutor-drawer-open', showing);
+    // The question box can only be measured once it is on screen.
+    if (showing && changed) growQuestion();
     if (animate && changed && showing) slideIn();
   }
 

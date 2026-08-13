@@ -177,7 +177,16 @@ function placementTurn(body) {
   };
 }
 
+// The fake deployment describes itself the way the shared Worker does: it has
+// no provider key of its own and expects the caller to bring one. That is what
+// makes the navbar's "Add your API key" notice appear for a paired browser
+// with no key, which is a state worth being able to drive.
 const server = createServer(async (req, res) => {
+  if (req.url === '/api/health') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, ai: { configured: false, requiresUserKey: true } }));
+    return;
+  }
   if (req.url === '/api/placement') {
     const chunks = [];
     for await (const c of req) chunks.push(c);
@@ -199,6 +208,9 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       answer: '这个词很常用。It is used for studying in general.',
+      // The real Worker reports back how many pictures it took, which is how
+      // the drawer tells a current deployment from one that drops them.
+      sawImages: (lastAsk.images || []).length,
       generatedAt: 1,
     }));
     return;

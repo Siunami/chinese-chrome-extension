@@ -8,8 +8,7 @@
     :root { --zx-measure: 720px; }
     .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
     .status { color: var(--zx-muted); font-size: 13px; }
-    .difficulty-label { display: flex; align-items: center; gap: 5px;
-      color: #555; font-size: 13px; }
+    .spacer { flex: 1; }
     button {
       font-size: 13px; padding: 7px 14px; border-radius: 8px; cursor: pointer;
       border: 1px solid #ccc; background: #fafafa;
@@ -18,10 +17,56 @@
     button:disabled { opacity: 0.6; cursor: default; }
     .primary { border-color: #b5232b; background: #b5232b; color: #fff; font-weight: 600; }
     .primary:hover:not(:disabled) { background: #9c1e25; }
+
+    /* The way in is a search box, the way most people meet a news site. Typing
+       anything — a topic, a phrase, a question, in either language — searches
+       the news for it; the button beside it writes from your own deck. */
+    .searchbar { display: flex; gap: 8px; margin-bottom: 10px; }
+    .search-field { position: relative; flex: 1; display: flex; }
+    .search-field::before {
+      content: "⌕"; position: absolute; left: 11px; top: 50%; transform: translateY(-52%);
+      color: #aaa; font-size: 18px; pointer-events: none;
+    }
+    #search {
+      flex: 1; font: inherit; font-size: 14px; padding: 9px 12px 9px 31px;
+      border: 1px solid #d5d0c4; border-radius: 9px; background: #fff; color: #333;
+      font-family: inherit, "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    #search:focus { outline: none; border-color: #b5232b; box-shadow: 0 0 0 3px rgba(181, 35, 43, 0.12); }
+    #search::placeholder { color: #aaa; }
+    #search:disabled { background: #f6f4ef; }
+
+    /* Suggested sections, named the way a Chinese news site names them. These
+       are pills rather than buttons, so like the archive rows below they carry
+       `.zx-app` to outrank shell.css's shared button styling. */
+    .cats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
+    .zx-app .cat {
+      display: flex; align-items: baseline; gap: 6px; padding: 5px 12px; border-radius: 16px;
+      border: 1px solid #e0dacb; background: #fbf9f4; color: #5c5240; font-size: 15px;
+      font-weight: 500;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    .zx-app .cat:hover:not(:disabled) { background: #f1ead9; border-color: #cdc3ab; }
+    .zx-app .cat.active { background: #b5232b; border-color: #b5232b; color: #fff; }
+    .cat.active .cat-en { color: #f3d3d5; }
+    .cat-en { font-size: 11px; color: #998f7a; font-family: inherit; letter-spacing: 0.02em; }
+    .zx-app .cat.quiet { font-size: 12.5px; color: #8a8271; border-style: dashed; }
+
+    /* The level dial. It changes what the NEXT article is written at, so it
+       sits at the quiet end of the toolbar rather than beside the search box —
+       this is a news reader first and a graded reader second. */
+    .difficulty-label { display: flex; align-items: center; gap: 4px;
+      color: #a09986; font-size: 12px; }
+    #difficulty {
+      font: inherit; font-size: 12px; color: #6f6757; background: transparent;
+      border: 1px solid transparent; border-radius: 6px; padding: 2px 4px; cursor: pointer;
+    }
+    #difficulty:hover, #difficulty:focus { border-color: #ddd7c8; background: #fbf9f4; }
     .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
     .chip { padding: 2px 10px; border-radius: 12px; background: #f1ead9; color: #8a7a58;
       font-size: 12px; font-weight: 600; }
     .chip.level { background: #fdf6c7; color: #7f1920; }
+    .chip.asked { background: #b5232b; color: #fff; }
     .headline { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 2px; }
     .headline h2 { margin: 0; font-size: 26px; line-height: 1.3;
       font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
@@ -58,6 +103,29 @@
     .empty, .setup { color: #666; margin-top: 30px; text-align: center; }
     .setup p, .empty p { max-width: 480px; margin: 0 auto 14px; }
 
+    /* Past articles. Every generated passage is kept, so this is the page's
+       archive: the day it was written, then the articles under it. A row is a
+       line in a list, not a control — hence `.zx-app`, which is what it takes
+       to outrank shell.css's `.zx-app button` and stop each one drawing itself
+       as a bordered, bold, 8px-rounded button. */
+    .day { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+      color: #a09986; margin: 18px 0 6px; }
+    .day:first-child { margin-top: 0; }
+    .zx-app .past {
+      display: flex; gap: 12px; align-items: baseline; width: 100%; text-align: left;
+      font-weight: 400; padding: 10px 12px; background: none;
+      border: 1px solid transparent; border-bottom-color: #eee; border-radius: 0;
+    }
+    .zx-app .past:hover:not(:disabled) {
+      background: #fbf9f4; border-color: #eee9dc; border-radius: 8px;
+    }
+    .past-time { color: #a8a294; font-size: 12px; min-width: 62px; }
+    .past-body { flex: 1; }
+    .past-title { font-size: 17px; color: #333; line-height: 1.4;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .past-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; align-items: center; }
+    .past.current .past-title { color: #8f1c23; font-weight: 600; }
+
     /* Hover-to-define popup (shared machinery in lib/lookup.js). */
     .tone1 { color: #d02c1f; } .tone2 { color: #0f8b1f; }
     .tone3 { color: #1b3ddb; } .tone4 { color: #8615bd; } .tone5 { color: #767676; }
@@ -66,18 +134,28 @@
 <body class="zx-app">
   <main class="zx-content">
   <h2 class="zx-title">News</h2>
+  <form class="searchbar" id="searchForm" hidden>
+    <div class="search-field">
+      <input id="search" type="search" maxlength="80" autocomplete="off"
+             aria-label="Search the news"
+             placeholder="Search the news — a topic, a phrase, a question">
+    </div>
+    <button id="generate" class="primary" type="button">Generate today's news</button>
+  </form>
+  <div class="cats" id="cats" hidden></div>
   <div class="toolbar">
-    <button id="generate" class="primary" type="button" hidden>Generate today's news</button>
-    <button id="regenerate" type="button" hidden>↻ Regenerate</button>
-    <label class="difficulty-label" id="difficultyLabel" hidden>Difficulty
+    <span class="status" id="status"></span>
+    <span class="spacer"></span>
+    <button id="english" type="button" hidden>Show English</button>
+    <button id="history" type="button" hidden>Past articles</button>
+    <label class="difficulty-label" id="difficultyLabel" hidden
+           title="Applies to the next article you generate">Level
       <select id="difficulty">
         <option value="easier">Easier</option>
         <option value="normal">Just right</option>
         <option value="harder">Harder</option>
       </select>
     </label>
-    <button id="english" type="button" hidden>Show English</button>
-    <span class="status" id="status"></span>
   </div>
   <div id="app"></div>
   </main>

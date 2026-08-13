@@ -185,9 +185,12 @@ test('every run of hanzi a page prints is hoverable', () => {
   // (file, the element that must be built with lookup.hoverable, why)
   const mustHover = [
     ['news.js', "'gloss-word'", 'the stretch vocabulary list'],
-    // Matched on `data.topics` rather than the class: the chip row also holds
-    // an English "reading at HSK 2" chip, which is not Chinese and not hoverable.
-    ['news.js', 'data.topics', 'the topic chips, which come back in Chinese'],
+    // Matched on the render call rather than on the class alone: the chip row
+    // also holds an English "reading at HSK 2" chip, which is not Chinese and
+    // not hoverable.
+    ["news.js", "'chip', topic", 'the topic chips, which come back in Chinese'],
+    ['news.js', "'chip asked'", 'the chip naming the topic that was searched for'],
+    ['news.js', "'past-title'", 'the headlines in the list of past articles'],
     ['wordlist.js', "'imp-hanzi'", 'headwords in the Pleco import preview'],
   ];
   for (const [file, marker, what] of mustHover) {

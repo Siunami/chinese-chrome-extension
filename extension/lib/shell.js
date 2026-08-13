@@ -16,6 +16,7 @@ import {
   SIMP_FIRST, TRAD_FIRST, getHanziPref, setHanziPref, onHanziPref,
 } from './hanzi.js';
 import { getAskOpen, setAskOpen, onAskOpen, onTutorPresence } from './tutorstate.js';
+import { AI_NOTICES, getAiStatus, onAiStatus } from './aistatus.js';
 import { icon } from './icons.js';
 
 // id -> { label, href, count }. `count` names the badge this tab carries.
@@ -222,6 +223,44 @@ export function mountShell({ active, onSelect } = {}) {
   onTutorPresence(setAskAvailable);
   paintAsk();
 
+  // The AI notice. Four features run on a model, and every one of them used to
+  // discover a missing or rejected key by failing inside itself, with a
+  // sentence only that page showed — so a learner who had never pasted a key
+  // met "could not reach the examiner" and had nothing to act on. The state is
+  // the app's (lib/aistatus.js), so the bar wears it, on every page, until it
+  // is dealt with.
+  //
+  // It is not shown for a deployment that pays for its own calls: nagging
+  // somebody to paste a key they do not need is worse than saying nothing.
+  const notice = el(onSelect ? 'button' : 'a', 'zx-notice');
+  if (onSelect) notice.type = 'button';
+  notice.hidden = true;
+  notice.append(icon('warn', 14), el('span', 'zx-notice-text'));
+  let noticeTarget = 'ai';
+
+  function paintNotice(status) {
+    const shown = AI_NOTICES[status.code];
+    notice.hidden = !shown;
+    if (!shown) return;
+    noticeTarget = shown.target;
+    notice.querySelector('.zx-notice-text').textContent = shown.label;
+    notice.title = shown.detail;
+    notice.setAttribute('aria-label', `${shown.label}. ${shown.detail}`);
+    if (!onSelect) notice.href = `options.html#${shown.target}`;
+  }
+
+  // Straight to the field, not to the top of a long settings page — the point
+  // of pressing this is to fix the thing it named. Inside the dashboard the
+  // options page is a tab of its own, and openOptionsPage cannot carry a
+  // fragment, so the URL is built by hand.
+  if (onSelect) {
+    notice.addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL(`options.html#${noticeTarget}`) });
+    });
+  }
+  getAiStatus().then(paintNotice);
+  onAiStatus(paintNotice);
+
   // Settings is deliberately not a tab: it is a place you visit and come back
   // from, not one of the things you study.
   const settings = el(onSelect ? 'button' : 'a', 'zx-settings', 'Options');
@@ -258,7 +297,7 @@ export function mountShell({ active, onSelect } = {}) {
   document.body.classList.add('zx-shell');
   document.body.append(main);
 
-  header.append(brand, nav, el('div', 'zx-spacer'), script, ask, settings);
+  header.append(brand, nav, el('div', 'zx-spacer'), notice, script, ask, settings);
   document.body.prepend(header);
 
   function setActive(id) {

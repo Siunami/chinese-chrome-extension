@@ -180,6 +180,29 @@ await test('an attached image is sent to the model with the question', async () 
     assert.match(parts[0].text, /Question: What does this sign say\?/);
     assert.equal(parts[1].type, 'input_image');
     assert.equal(parts[1].image_url, `data:image/png;base64,${PIXEL}`);
+    // The extension needs to know the picture actually landed: a Worker
+    // deployed before images existed accepts the request and drops them.
+    assert.equal((await res.json()).sawImages, 1);
+  } finally {
+    model.restore();
+  }
+});
+
+// A picture stays in the conversation. The client resends the last one with
+// follow-up questions, and the prompt has to say so, or the model announces a
+// newly-arrived photograph every turn.
+await test('an image carried over from an earlier turn is described as such', async () => {
+  const model = stubModel('It says 小心地滑.');
+  try {
+    await worker.fetch(post({
+      question: 'What was the second line again?',
+      images: [{ mime: 'image/png', data: PIXEL }],
+      imagesFromEarlier: true,
+    }, auth), { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    const text = model.seen[0].input[0].content[0].text;
+    assert.match(text, /sent an image earlier in this conversation/);
+    assert.match(text, /still about it/);
+    assert.doesNotMatch(text, /attached an image with this question/);
   } finally {
     model.restore();
   }
