@@ -1,6 +1,11 @@
 import { DEFAULT_SERVER_URL, getAiKey, getSyncMeta, newToken, pairUrl } from './lib/sync.js';
 import { DEFAULT_LIMITS } from './lib/srs.js';
+import { mountShell } from './lib/shell.js';
 import qrcode from './lib/qr.js';
+
+// Settings is a destination in the app, not a detached preferences window, so
+// it wears the same navbar as every other page.
+mountShell({ active: 'options' });
 
 const DEFAULTS = {
   theme: 'yellow',
@@ -34,9 +39,9 @@ const savedEl = document.getElementById('saved');
 let savedTimer = null;
 
 function flashSaved() {
-  savedEl.style.visibility = 'visible';
+  savedEl.classList.add('show');
   clearTimeout(savedTimer);
-  savedTimer = setTimeout(() => { savedEl.style.visibility = 'hidden'; }, 1000);
+  savedTimer = setTimeout(() => savedEl.classList.remove('show'), 1200);
 }
 
 async function load() {

@@ -4,88 +4,30 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Zhongwen Explorer</title>
+  <!-- The navbar is shared with every standalone page; lib/shell.js builds it. -->
+  <link rel="stylesheet" href="shell.css">
   <style>
-    :root { color-scheme: light; }
-    /* An author `display` rule outranks the UA's [hidden] rule, so anything
-       toggled with .hidden needs this or it never actually hides. */
-    [hidden] { display: none !important; }
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; }
     body {
       display: flex; flex-direction: column; overflow: hidden;
-      background: #f4f1e8; color: #222;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--zx-paper); color: var(--zx-ink);
+      font-family: var(--zx-font);
     }
-    header {
-      min-height: 64px; display: flex; align-items: center; gap: 18px;
-      padding: 10px 24px; border-bottom: 1px solid #ddd7c8; background: #fffdf7;
-    }
-    .brand { display: flex; align-items: center; gap: 10px; margin-right: 8px; }
-    .mark {
-      width: 34px; height: 34px; display: grid; place-items: center;
-      border-radius: 9px; background: #b5232b; color: #fff; font-size: 21px;
-      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    }
-    .brand-text { line-height: 1.15; }
-    .brand-text b { display: block; font-size: 14px; }
-    .brand-text span { color: #888; font-size: 10px; letter-spacing: 0.04em; }
-    nav { display: flex; align-items: center; gap: 6px; }
-    .tab {
-      display: flex; align-items: center; gap: 7px; padding: 8px 13px;
-      border: 1px solid transparent; border-radius: 8px; background: transparent;
-      color: #555; font: inherit; font-size: 13px; font-weight: 650; cursor: pointer;
-    }
-    .tab:hover { background: #f3efe4; }
-    .tab.active { border-color: #d8cab5; background: #fdf6c7; color: #7f1920; }
-    .count {
-      min-width: 19px; padding: 1px 6px; border-radius: 10px;
-      background: rgba(0, 0, 0, 0.08); font-size: 10px; text-align: center;
-    }
-    .tab.active .count { background: rgba(181, 35, 43, 0.12); }
-    .spacer { flex: 1; }
-    .options {
-      padding: 0; border: 0; background: none; color: #777; font: inherit;
-      font-size: 12px; font-weight: 600; cursor: pointer;
-    }
-    .options:hover { color: #b5232b; text-decoration: underline; }
     main { flex: 1; min-height: 0; padding: 16px 20px 20px; }
     .surface {
-      width: 100%; height: 100%; overflow: hidden; border: 1px solid #ddd7c8;
-      border-radius: 13px; background: #fff; box-shadow: 0 3px 18px rgba(60, 48, 24, 0.07);
+      width: 100%; height: 100%; overflow: hidden; border: 1px solid var(--zx-line);
+      border-radius: 13px; background: var(--zx-surface);
+      box-shadow: 0 3px 18px rgba(60, 48, 24, 0.07);
     }
     iframe { display: none; width: 100%; height: 100%; border: 0; background: #fff; }
     iframe.active { display: block; }
     @media (max-width: 620px) {
-      header { padding: 9px 12px; gap: 8px; }
-      .brand-text { display: none; }
-      .tab { padding: 7px 9px; }
       main { padding: 8px; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="brand" aria-label="Zhongwen Explorer">
-      <div class="mark">中</div>
-      <div class="brand-text"><b>Zhongwen Explorer</b><span>READ · SAVE · REMEMBER</span></div>
-    </div>
-    <nav aria-label="Learning views">
-      <button class="tab active" data-view="review" type="button">
-        Review <span class="count" id="reviewCount">0</span>
-      </button>
-      <button class="tab" data-view="library" type="button">
-        Library <span class="count" id="savedCount">0</span>
-      </button>
-      <button class="tab" data-view="guides" type="button">
-        Guides
-      </button>
-      <button class="tab" data-view="news" type="button">
-        News
-      </button>
-    </nav>
-    <div class="spacer"></div>
-    <button class="options" id="openOptions" type="button">Options</button>
-  </header>
   <main>
     <div class="surface">
       <iframe class="active" id="reviewFrame" src="review.html?embedded=1" title="Spaced repetition review"></iframe>

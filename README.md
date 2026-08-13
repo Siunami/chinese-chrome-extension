@@ -134,12 +134,19 @@ does well that popup dictionaries usually don't: **real example sentences**
   text rather than the page in general. On a flashcard it also gets the card
   itself: the word, its reading, the gloss, the example sentence on screen, and
   how many times you have forgotten it. See [Asking questions](#asking-questions).
+- **One app, one navbar** — Review, Library, Guides, News, and Settings all
+  wear the same top bar, with live due/saved counts on the tabs that have them.
+  It is a single component (`extension/lib/shell.js` + `extension/shell.css`)
+  rather than a nav hand-written into each page, which is what let five copies
+  drift into five different link lists — one of them still advertising a page
+  that had been deleted. Settings in particular used to look like a different
+  product; it is now a destination in the app like any other.
 - **New-tab learning dashboard** — Chrome's New Tab page opens directly to
-  spaced-repetition review. Every view is a tab of the same app — Review,
-  Library, Guides, News — so the header and the live due/saved
-  counts stay put while you move between them, and each page suppresses its own
-  standalone title when embedded rather than stacking a second header.
-  Settings open in their own tab so the dashboard is never lost.
+  spaced-repetition review. There the same navbar's tabs swap iframes instead
+  of navigating, so the header and the counts stay put while you move between
+  views, and each page hides its own copy of the bar when embedded rather than
+  stacking a second one. Settings opens in its own tab so the dashboard is
+  never lost.
 - **AI news digest (News tab)** — a short Mandarin passage written just for
   you, on demand. Click **Generate** and the sync Worker builds a profile from
   your deck (which words you're learning, which you keep failing, and how well
@@ -577,6 +584,9 @@ needs one.
 ```
 extension/          the unpacked extension (load this folder in Chrome)
   manifest.json     MV3 manifest
+  shell.css         the app's look: navbar, page frame, shared control styles
+  lib/shell.js      builds that navbar — one nav for every page, links on a
+                    standalone page and frame-swapping buttons in the dashboard
   background.js     service worker: loads dictionary + sentences, answers lookups
   lib/popup.js      THE popup: definitions, examples, characters, related words,
                     save/copy/pronounce, nested-definition history (shadow DOM).

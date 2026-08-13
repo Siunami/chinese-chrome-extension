@@ -12,12 +12,11 @@ import { HSK_GUIDES, BANDS, guideByLevel, chineseStrings } from './guides/index.
 import { splitSentences } from './lib/cards.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
+import { mountShell } from './lib/shell.js';
 
 const { saver, createSelectionBar } = globalThis.ZhongwenSaveCard;
 
-if (new URLSearchParams(location.search).has('embedded')) {
-  document.body.classList.add('embedded');
-}
+mountShell({ active: 'guides' });
 
 const railEl = document.getElementById('rail');
 const guideEl = document.getElementById('guide');

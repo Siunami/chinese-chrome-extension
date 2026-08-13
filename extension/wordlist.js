@@ -8,12 +8,11 @@ import {
 import { tombstoneFor } from './lib/merge.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
+import { mountShell } from './lib/shell.js';
 
 const { createSelectionBar } = globalThis.ZhongwenSaveCard;
 
-if (new URLSearchParams(location.search).has('embedded')) {
-  document.body.classList.add('embedded');
-}
+mountShell({ active: 'library' });
 
 // Nothing here is a test, so hovering always defines — the same popup you get
 // on a web page, including saving a word you meet inside a definition.
@@ -51,7 +50,6 @@ const tutor = createTutor({
 
 const listEl = document.getElementById('list');
 const countEl = document.getElementById('count');
-const dueBadge = document.getElementById('dueBadge');
 const overviewEl = document.getElementById('overview');
 const filtersEl = document.getElementById('filters');
 
@@ -223,8 +221,6 @@ function render(words) {
   allWords = words;
   const now = Date.now();
   const plan = planSession(words, now, limits);
-  dueBadge.hidden = plan.queued === 0;
-  dueBadge.textContent = `${plan.queued} to review`;
   countEl.textContent = words.length
     ? `${plural(words.length, 'card')}`
     : '';

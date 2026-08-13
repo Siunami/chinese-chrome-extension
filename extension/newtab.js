@@ -1,22 +1,24 @@
-import { DEFAULT_LIMITS, reviewBadgeCount } from './lib/srs.js';
+// The new-tab dashboard: one navbar, one surface, an iframe per view.
+//
+// The navbar itself is lib/shell.js — the same component every standalone page
+// mounts — so the dashboard and the pages inside it cannot drift apart. Here
+// it is given an onSelect, which turns the tabs into buttons that swap frames
+// instead of links that navigate.
 
-const tabs = [...document.querySelectorAll('.tab')];
+import { mountShell } from './lib/shell.js';
+
 const frames = {
   review: document.getElementById('reviewFrame'),
   library: document.getElementById('libraryFrame'),
   guides: document.getElementById('guidesFrame'),
   news: document.getElementById('newsFrame'),
 };
-const reviewCountEl = document.getElementById('reviewCount');
-const savedCountEl = document.getElementById('savedCount');
+
+const shell = mountShell({ active: 'review', onSelect: (view) => selectView(view) });
 
 function selectView(view, updateHash = true) {
   const selected = frames[view] ? view : 'review';
-  for (const tab of tabs) {
-    const active = tab.dataset.view === selected;
-    tab.classList.toggle('active', active);
-    tab.setAttribute('aria-selected', String(active));
-  }
+  shell.setActive(selected);
   for (const [name, frame] of Object.entries(frames)) {
     const active = name === selected;
     // Lazy frames carry data-src and load on first activation.
@@ -25,31 +27,6 @@ function selectView(view, updateHash = true) {
   }
   if (updateHash) history.replaceState(null, '', `#${selected}`);
 }
-
-// The Review badge counts what a session started right now would actually
-// serve — due cards plus what is left of today's new-card allowance. Counting
-// every unstudied word instead is what made the tab claim "23" on a day the
-// review page had already said "done".
-async function updateCounts(wordlist) {
-  const words = wordlist || (await chrome.storage.local.get('wordlist')).wordlist || [];
-  const limits = await chrome.storage.sync.get(DEFAULT_LIMITS).catch(() => DEFAULT_LIMITS);
-  reviewCountEl.textContent = String(reviewBadgeCount(words, Date.now(), limits));
-  savedCountEl.textContent = String(words.length);
-}
-
-for (const tab of tabs) {
-  tab.addEventListener('click', () => selectView(tab.dataset.view));
-}
-
-// Settings open in their own tab rather than replacing the dashboard.
-document.getElementById('openOptions').addEventListener('click', () => {
-  chrome.runtime.openOptionsPage();
-});
-
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.wordlist) updateCounts(changes.wordlist.newValue || []);
-  if (area === 'sync' && (changes.newPerDay || changes.maxPerDay)) updateCounts();
-});
 
 // Frames ask the shell to switch views rather than navigating themselves —
 // otherwise the review frame would load a second copy of the library inside
@@ -61,4 +38,3 @@ window.addEventListener('message', (event) => {
 });
 
 selectView(location.hash.slice(1) || 'review', false);
-updateCounts();
