@@ -216,6 +216,33 @@
     </div>
   </div>
 
+  <div class="section" id="backup">
+    <h2>Backup</h2>
+    <p class="note section-note">Everything this browser knows about your
+       learning — saved cards and review progress, settings, the news archive,
+       placement results and tutor conversations — written to one file on this
+       computer. Chrome keeps all of it inside the extension, so uninstalling it
+       or resetting this profile takes the lot; a backup is the only copy that
+       survives that. Nothing is uploaded anywhere.</p>
+    <div class="row">
+      <label for="backupSecrets">Include the API key and pairing code</label>
+      <input type="checkbox" id="backupSecrets" checked>
+    </div>
+    <p class="note">Leave this on to restore an install exactly as it was. Turn
+       it off if the file is going somewhere you would not put a password —
+       anyone holding the pairing code can read and change your cards.</p>
+    <div class="button-row">
+      <button type="button" class="primary" id="backupDownload">Download backup</button>
+      <button type="button" id="backupRestore">Restore from a file…</button>
+      <input type="file" id="backupFile" accept=".json,application/json" hidden>
+    </div>
+    <p class="note" id="backupStatus"></p>
+    <p class="note">Restoring merges the file's cards with the ones already on
+       this computer, so nothing you have saved or reviewed since the backup is
+       lost, and a card you deleted since stays deleted. Settings, news,
+       placement results and tutor conversations are replaced by the file.</p>
+  </div>
+
   <p class="note credits">Dictionary:
      <a href="https://www.mdbg.net/chinese/dictionary?page=cedict">CC-CEDICT</a>
      (CC BY-SA 4.0). Example sentences: <a href="https://tatoeba.org">Tatoeba</a>

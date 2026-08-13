@@ -364,6 +364,7 @@ const CHROME_SHIM = `
             method: 'POST', body: JSON.stringify(msg),
           }).then((r) => r.json())),
         openOptionsPage: () => {},
+        getManifest: () => (${readFileSync(join(extDir, 'manifest.json'), 'utf8')}),
       },
       storage: {
         local: area('local'),

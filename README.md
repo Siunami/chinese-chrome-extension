@@ -221,6 +221,13 @@ headless Chrome, so they cannot quietly stop being true.)*
   browser and never leaves it.
 
   ![Past articles, grouped by the day they were written](docs/shots/news-history.png)
+- **Backup and restore** — one file with everything in it. Chrome keeps your
+  cards, review progress, settings, news archive, placement results and tutor
+  conversations inside the extension, which means uninstalling it or resetting
+  the profile takes the lot. **Download backup** on the options page writes all
+  of it to a `.json` file on your computer, and **Restore from a file** reads
+  one back — merging its cards with whatever is already here, so a restore can
+  only ever add. See [Backing up your progress](#backing-up-your-progress).
 - **Themes** — classic Zhongwen yellow, light, or dark.
 - **Toggle** — click the toolbar icon to switch the dictionary on/off (badge
   shows ON). History and review pages are linked from the options page.
@@ -373,6 +380,47 @@ Local development: `node scripts/sync-shared.mjs`, then in `worker/` run
 `http://localhost:8787`. `node scripts/sync-smoke.mjs` exercises the API and
 `node scripts/pwa-e2e.mjs` click-tests the app in headless Chrome.
 
+## Backing up your progress
+
+Everything this extension knows about you lives in `chrome.storage`, which is
+the browser's data rather than yours: uninstalling the extension, resetting a
+Chrome profile, or moving to a new machine takes all of it, silently. Phone
+sync is not a backup either — it carries cards and nothing else, and only while
+a server is paired.
+
+**Download backup** on the options page writes both storage areas to a single
+dated `.json` file: saved cards and their review schedules, every setting, the
+news archive, placement results, tutor conversations, your HSK level. It is a
+dump of what is stored rather than a hand-picked list of keys, so state a
+future feature adds is in the file without anyone remembering to add it —
+excepting two keys that describe the last five minutes rather than the learner
+(the last provider error, and the cached answer about the server's own key),
+which would otherwise restore as a warning about a key nobody has tried yet.
+
+The **API key and pairing code** are the one thing the page asks about. Both
+are needed to restore an install exactly as it was, and both are credentials —
+anyone holding the pairing code can read and change your cards — so the
+checkbox leaves them out of a file that is going somewhere you would not put a
+password. A backup without them restores everything else and leaves this
+machine's own key and pairing untouched.
+
+**Restore from a file** shows what is in the file and what will happen before
+it writes anything, then applies two different meanings of the word:
+
+- **Cards are merged**, through the same rules phone sync uses
+  (`extension/lib/merge.js`). A card saved or reviewed since the backup
+  survives it, a card you deleted since stays deleted, the better review
+  progress wins per card, and restoring the same file twice does nothing the
+  second time. A restore cannot lose a card.
+- **Everything else is replaced** — settings, news archive, placement results,
+  tutor conversations. These are single-valued; restoring one means taking the
+  file's version.
+
+Keys the file does not carry are left alone rather than cleared, which is what
+makes the credential checkbox safe. A file that is not a backup, or one written
+by a newer version of the extension than can read it, is refused with a
+sentence rather than half-applied.
+
 ## Tests
 
 Unit and protocol tests are plain Node scripts with no dependencies —
@@ -409,6 +457,14 @@ makes a shared deployment safe to hand to other people: that a caller's key is
 what reaches the provider, that it replaces the Worker's own credentials rather
 than merging with them, and that with `REQUIRE_USER_KEY` set a keyless request
 is refused even though the Worker has a usable key of its own.
+`tests/backup.test.mjs` covers the file a learner falls back on after Chrome has
+thrown their progress away: that a dump of storage really does carry keys this
+code has never heard of, that the two transient keys and (on request) the two
+credentials stay behind, that a mangled or newer-than-us file is refused with a
+sentence instead of half-applied, and — the property the whole feature rests on
+— that restoring cannot lose a card: work done since the backup survives it, a
+deletion since is not undone by it, and restoring twice is the same as
+restoring once.
 
 `node scripts/worker-smoke.mjs [url]` checks a **deployed** Worker rather than
 the source. Every other test imports `worker/src/index.js` and runs it in Node,
@@ -444,7 +500,14 @@ the question and actually sent. Highlight-to-ask is driven with a real press-dra
 rather than a scripted selection — a synthetic `Selection` passes even when
 nothing on the page is actually selectable. The popup lives in a closed shadow
 root, so its contents are read through CDP's piercing traversal rather than a
-test-only hook.
+test-only hook. Backup is driven through a real file in both directions: the
+download is caught at `URL.createObjectURL` and the bytes it produced are the
+assertion, then that same blob goes back in through the file input — which is
+the only way to find out that the page reads *all* of storage into the file
+(a backup with an empty `sync` half is the shape of this feature silently not
+working), that the credentials checkbox is obeyed, that the state comes back,
+that the page repaints itself instead of showing what it read on load, and that
+someone else's `.json` is refused rather than applied.
 
 `node scripts/screenshots.mjs` takes the pictures at the top of this file
 through the same harness, and writes them to `docs/shots/`. The learner in them
@@ -921,12 +984,16 @@ extension/          the unpacked extension (load this folder in Chrome)
   placement.html/js the interview itself, and the report it leaves behind
   lib/merge.js      per-card sync merge rules (shared with worker + pwa)
   lib/sync.js       sync client: push/pull against the worker
+  lib/backup.js     what goes in a backup file and what restoring one means:
+                    a dump of both storage areas, cards merged rather than
+                    overwritten on the way back in (pure; tested)
   lib/aistatus.js   whether the AI features can work (key present? refused by the
                     provider? server too old?) and the one POST every model-backed
                     call goes through — the navbar's notice reads it (tested)
   lib/qr.js         vendored qrcode-generator (MIT) for the pairing QR
   data/             generated: dict.tsv (CC-CEDICT), sentences.tsv (Tatoeba)
-  options.html/js   settings (theme, tone colors, examples, phone pairing, …)
+  options.html/js   settings (theme, tone colors, examples, phone pairing,
+                    backup + restore, …)
   newtab.html/js    New Tab dashboard: review + saved-word library + news
   news.html/js      AI news digest tab (stretch-level passage from your cards)
   lib/profile.js    learner-profile snapshot sent to /api/news (pure; tested)
@@ -964,7 +1031,8 @@ tests/              unit + protocol tests: node tests/merge.test.mjs, …
                     checks what may become a card (including that every guide
                     sentence and vocabulary item actually can), pages.test.mjs
                     checks that every page loads the classic scripts before its
-                    module
+                    module, backup.test.mjs pins down what a backup carries and
+                    what restoring one may and may not do to the deck
 rawdata/            original downloads (gitignored)
 test-page.html      manual test fixture with edge cases
 ```

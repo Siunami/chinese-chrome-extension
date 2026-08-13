@@ -581,6 +581,118 @@ await check('the options page saves an AI key and rejects a non-key', async () =
   assert.equal(await stored(), key);
   assert.deepEqual(opts.errors, []);
 });
+
+// A backup is only worth anything if it round-trips through a real file. The
+// unit tests cover what goes in it and what a restore means; this covers the
+// two halves nothing else can — that the page actually reads all of storage
+// into a downloadable blob, and that handing that blob back to the file input
+// puts the state back.
+//
+// The download is caught at URL.createObjectURL rather than let out to disk:
+// the file's bytes are the assertion.
+const downloadBackup = async () => opts.evalJs(`(async () => {
+  let blob = null;
+  const create = URL.createObjectURL;
+  const click = HTMLAnchorElement.prototype.click;
+  URL.createObjectURL = (b) => { blob = b; return 'blob:captured'; };
+  HTMLAnchorElement.prototype.click = function () {};
+  try {
+    document.getElementById('backupDownload').click();
+    for (let i = 0; i < 100 && !blob; i++) await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    URL.createObjectURL = create;
+    HTMLAnchorElement.prototype.click = click;
+  }
+  return blob && blob.text();
+})()`);
+
+let backupText = null;
+await check('the options page downloads everything in storage as one file', async () => {
+  await opts.evalJs(`Promise.all([
+    chrome.storage.local.set({ hskLevel: 4, newsDifficulty: 'harder' }),
+    chrome.storage.sync.set({
+      theme: 'dark', toneColors: true, exampleCount: 5, showHints: true,
+      newPerDay: 20, maxPerDay: 90,
+    }),
+  ])`);
+  backupText = await downloadBackup();
+  assert.ok(backupText, 'no file was produced');
+  const backup = JSON.parse(backupText);
+  assert.equal(backup.format, 'zhongwen-explorer-backup');
+  assert.equal(backup.extensionVersion, await opts.evalJs('chrome.runtime.getManifest().version'));
+  assert.equal(backup.local.hskLevel, 4);
+  assert.equal(backup.local.newsDifficulty, 'harder');
+  // The key the check above saved, because the box is ticked.
+  assert.match(backup.local.aiKey, /^sk-x+$/);
+  // Settings live in the other storage area; a backup with an empty `sync` is
+  // the shape of this feature silently only half working.
+  assert.ok(Object.keys(backup.sync).length >= 5, 'no settings in the backup');
+});
+
+await check('unticking the box leaves the credentials out of the file', async () => {
+  await opts.evalJs(`(() => {
+    const box = document.getElementById('backupSecrets');
+    box.checked = false;
+  })()`);
+  const backup = JSON.parse(await downloadBackup());
+  assert.equal('aiKey' in backup.local, false, 'the API key was written anyway');
+  assert.equal('syncMeta' in backup.local, false, 'the pairing code was written anyway');
+  assert.equal(backup.local.hskLevel, 4, 'everything else should still be there');
+  await opts.evalJs(`(() => { document.getElementById('backupSecrets').checked = true; })()`);
+});
+
+await check('restoring that file puts the state back', async () => {
+  const result = await opts.evalJs(`(async () => {
+    // The restore asks before it writes; this test is the yes.
+    window.confirm = () => true;
+    await chrome.storage.local.set({ hskLevel: 9, newsDifficulty: 'easier' });
+    await chrome.storage.sync.set({ theme: 'light' });
+    document.getElementById('theme').value = 'light';
+    const input = document.getElementById('backupFile');
+    const dt = new DataTransfer();
+    dt.items.add(new File([${JSON.stringify(backupText)}], 'backup.json',
+      { type: 'application/json' }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const status = document.getElementById('backupStatus');
+    for (let i = 0; i < 100 && !/^Restored/.test(status.textContent); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return {
+      status: status.textContent,
+      local: await chrome.storage.local.get(['hskLevel', 'newsDifficulty']),
+      theme: (await chrome.storage.sync.get('theme')).theme,
+      shown: document.getElementById('theme').value,
+    };
+  })()`);
+  assert.match(result.status, /^Restored\./);
+  assert.equal(result.local.hskLevel, 4, 'the level was not restored');
+  assert.equal(result.local.newsDifficulty, 'harder');
+  assert.equal(result.theme, 'dark', 'settings were not restored');
+  // And the page redraws itself, rather than showing what it read on load.
+  assert.equal(result.shown, 'dark', 'the page still shows the pre-restore settings');
+});
+
+await check('a file that is not a backup is refused rather than applied', async () => {
+  const status = await opts.evalJs(`(async () => {
+    window.confirm = () => true;
+    const input = document.getElementById('backupFile');
+    const dt = new DataTransfer();
+    dt.items.add(new File(['{"hello":"world"}'], 'notes.json', { type: 'application/json' }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const el = document.getElementById('backupStatus');
+    for (let i = 0; i < 100 && /^Restored/.test(el.textContent); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return el.textContent;
+  })()`);
+  assert.match(status, /not a Zhongwen Explorer backup/);
+  assert.equal(
+    await opts.evalJs('chrome.storage.local.get("hskLevel").then((r) => r.hskLevel)'), 4);
+});
+await opts.shot('options-backup');
+await check('the options page raised no page errors', () => assert.deepEqual(opts.errors, []));
 opts.close();
 
 // --- the dashboard: every view is a tab, so the chrome never disappears ----

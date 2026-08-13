@@ -4,6 +4,7 @@ import {
   clearAiFailure, getAiStatus, onAiStatus,
 } from './lib/aistatus.js';
 import { DEFAULT_LIMITS } from './lib/srs.js';
+import { buildBackup, planRestore, readBackup, summarizeBackup } from './lib/backup.js';
 import { mountShell } from './lib/shell.js';
 import { onHanziPref } from './lib/hanzi.js';
 import qrcode from './lib/qr.js';
@@ -54,6 +55,33 @@ function flashSaved() {
   savedTimer = setTimeout(() => savedEl.classList.remove('show'), 1200);
 }
 
+// Put a settings object on screen. Separate from load() because a restore
+// hands the page a whole new set of values while the voice list is already
+// built, and re-running load() would append that list to itself.
+function showSettings(s) {
+  els.theme.value = s.theme;
+  els.toneColors.checked = !!s.toneColors;
+  els.exampleCount.value = s.exampleCount;
+  els.examplePinyin.checked = !!s.examplePinyin;
+  els.hanziPref.value = s.hanziPref;
+  els.showHints.checked = !!s.showHints;
+  els.mandarinVoice.value = s.mandarinVoiceId;
+  // A voice chosen on another Mac, or one since removed from this one: the
+  // assignment above silently does nothing, leaving the dropdown showing a
+  // voice that is not the saved setting. Name it instead.
+  if (els.mandarinVoice.value !== s.mandarinVoiceId) {
+    const missing = document.createElement('option');
+    missing.value = s.mandarinVoiceId;
+    missing.textContent = 'Previously selected voice (unavailable)';
+    els.mandarinVoice.append(missing);
+    els.mandarinVoice.value = s.mandarinVoiceId;
+  }
+  els.voiceRate.value = s.voiceRate;
+  els.newPerDay.value = s.newPerDay;
+  els.maxPerDay.value = s.maxPerDay;
+  voiceRateValue.value = `${Number(s.voiceRate).toFixed(2)}×`;
+}
+
 async function load() {
   const [s, voiceResult] = await Promise.all([
     chrome.storage.sync.get(DEFAULTS),
@@ -70,23 +98,7 @@ async function load() {
     option.textContent = `${voice.voiceName} (${voice.lang})${voice.recommended ? ' — recommended' : ''}`;
     els.mandarinVoice.append(option);
   }
-  if (s.mandarinVoiceId !== 'auto' && !voices.some((v) => v.id === s.mandarinVoiceId)) {
-    const missing = document.createElement('option');
-    missing.value = s.mandarinVoiceId;
-    missing.textContent = 'Previously selected voice (unavailable)';
-    els.mandarinVoice.append(missing);
-  }
-  els.theme.value = s.theme;
-  els.toneColors.checked = !!s.toneColors;
-  els.exampleCount.value = s.exampleCount;
-  els.examplePinyin.checked = !!s.examplePinyin;
-  els.hanziPref.value = s.hanziPref;
-  els.showHints.checked = !!s.showHints;
-  els.mandarinVoice.value = s.mandarinVoiceId;
-  els.voiceRate.value = s.voiceRate;
-  els.newPerDay.value = s.newPerDay;
-  els.maxPerDay.value = s.maxPerDay;
-  voiceRateValue.value = `${Number(s.voiceRate).toFixed(2)}×`;
+  showSettings(s);
   if (voices.length === 0) {
     voiceNote.textContent = 'Chrome did not report an installed Mandarin voice. Add a Mandarin voice in macOS System Settings, then reload this page.';
   }
@@ -294,6 +306,104 @@ syncEls.disable.addEventListener('click', async () => {
 });
 
 renderSync();
+
+// ---------------------------------------------------------------------------
+// Backup and restore
+//
+// The storage reads, the download, and the file picker. What belongs in a
+// backup and what a restore means to each kind of state is lib/backup.js.
+// ---------------------------------------------------------------------------
+
+const backupEls = {
+  secrets: document.getElementById('backupSecrets'),
+  download: document.getElementById('backupDownload'),
+  restore: document.getElementById('backupRestore'),
+  file: document.getElementById('backupFile'),
+  status: document.getElementById('backupStatus'),
+};
+
+function setBackupStatus(text, warn = false) {
+  backupEls.status.textContent = text;
+  backupEls.status.classList.toggle('warn', warn);
+}
+
+backupEls.download.addEventListener('click', async () => {
+  // `null` rather than a list of keys: whatever this install has stored is
+  // what the file gets, including state written by a version of the extension
+  // this code has never heard of.
+  const [sync, local] = await Promise.all([
+    chrome.storage.sync.get(null),
+    chrome.storage.local.get(null),
+  ]);
+  const includeSecrets = backupEls.secrets.checked;
+  const backup = buildBackup({ sync, local }, {
+    includeSecrets,
+    now: Date.now(),
+    extensionVersion: chrome.runtime.getManifest().version,
+  });
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  // Dated, because the point of these is to have more than one.
+  a.download = `zhongwen-explorer-backup-${new Date(backup.createdAt).toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  setBackupStatus(`Saved ${summarizeBackup(backup)}.${includeSecrets ? '' : ' The API key and'
+    + ' pairing code were left out, so restoring this file will not change either.'}`);
+  flashSaved();
+});
+
+backupEls.restore.addEventListener('click', () => backupEls.file.click());
+
+backupEls.file.addEventListener('change', async () => {
+  const file = backupEls.file.files?.[0];
+  // Reset first: picking the same file twice in a row must re-run the restore.
+  backupEls.file.value = '';
+  if (!file) return;
+
+  let backup;
+  try {
+    backup = readBackup(await file.text());
+  } catch (err) {
+    setBackupStatus(err.message, true);
+    return;
+  }
+
+  const when = backup.createdAt
+    ? `backed up ${new Date(backup.createdAt).toLocaleString()}`
+    : 'from an unknown date';
+  if (!confirm(`Restore ${summarizeBackup(backup)}, ${when}?\n\n`
+    + 'Saved cards are merged with the ones on this computer, so nothing you have '
+    + 'saved or reviewed since is lost. Settings, news, placement results and tutor '
+    + 'conversations are replaced by the file.')) {
+    setBackupStatus('Restore cancelled — nothing was changed.');
+    return;
+  }
+
+  // Read the deck now rather than trusting anything from before the dialog: a
+  // sync or another tab may have changed it while the confirmation was up.
+  const current = await chrome.storage.local.get(['wordlist', 'tombstones']);
+  const plan = planRestore(backup, current, Date.now());
+  try {
+    if (Object.keys(plan.sync).length) await chrome.storage.sync.set(plan.sync);
+    await chrome.storage.local.set(plan.local);
+  } catch (err) {
+    // Chrome's local area is capped, and a backup carrying a long news archive
+    // is the way to reach it. Saying which limit was hit beats a page that
+    // looks like it restored.
+    setBackupStatus(`Could not write everything in that backup: ${err.message}`, true);
+    return;
+  }
+  chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
+
+  showSettings(await chrome.storage.sync.get(DEFAULTS));
+  renderAiKey();
+  renderSync();
+  const cards = plan.local.wordlist.length;
+  setBackupStatus(`Restored. Your library now has ${cards} card${cards === 1 ? '' : 's'}.`);
+  flashSaved();
+});
 
 testVoice.addEventListener('click', async () => {
   const result = await chrome.runtime.sendMessage({
