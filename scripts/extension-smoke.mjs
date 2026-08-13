@@ -1430,11 +1430,27 @@ await check('the tutor asks the Worker with the card as context', async () => {
 // another app — so the clipboard is the way in.
 await check('a pasted image is attached, shown with the question, and sent', async () => {
   await review.evalJs(`(async () => {
+    // A photo of a sign, near enough: big, detailed, and a multi-megabyte PNG
+    // on the clipboard — which is what the shrinking is for. A flat rectangle
+    // encodes to the same handful of bytes at every size and quality, and
+    // proves nothing about either.
     const canvas = document.createElement('canvas');
-    canvas.width = 40; canvas.height = 30;
+    canvas.width = 1600; canvas.height = 1200;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#b5232b';
-    ctx.fillRect(0, 0, 40, 30);
+    const grad = ctx.createLinearGradient(0, 0, 1600, 1200);
+    grad.addColorStop(0, '#b5232b'); grad.addColorStop(1, '#f2ead7');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 1600, 1200);
+    const pixels = ctx.getImageData(0, 0, 1600, 1200);
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      const n = (Math.random() - 0.5) * 30;
+      pixels.data[i] += n; pixels.data[i + 1] += n; pixels.data[i + 2] += n;
+    }
+    ctx.putImageData(pixels, 0, 0);
+    ctx.fillStyle = '#fff';
+    ctx.font = '120px sans-serif';
+    ctx.fillText('小心地滑', 120, 400);
+    ctx.fillText('请勿吸烟', 120, 700);
     const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
     const data = new DataTransfer();
     data.items.add(new File([blob], 'sign.png', { type: 'image/png' }));
@@ -1464,9 +1480,34 @@ await check('a pasted image is attached, shown with the question, and sent', asy
   await review.shot('tutor-image-sent');
   const asked = await (await fetch(`${base}/__lastask`)).json();
   assert.equal(asked.images?.length, 1, 'the image never reached the request');
-  assert.equal(asked.images[0].mime, 'image/jpeg', 'the image was not shrunk before sending');
+  // Whichever of the two encodings came out smaller — never the PNG a canvas
+  // falls back to when it cannot make the type it was asked for, which for a
+  // photograph is many times larger than either.
+  assert.ok(['image/webp', 'image/jpeg'].includes(asked.images[0].mime),
+    `sent as ${asked.images[0].mime}, which is not a format it was shrunk into`);
   assert.ok(asked.images[0].data.length > 100, 'the image data is empty');
   assert.ok(!asked.images[0].data.startsWith('data:'), 'the data: prefix was sent as payload');
+});
+
+// Storage is the expensive half: what is sent goes over the wire once, what is
+// kept sits in the browser for as long as the conversation does.
+await check('the picture kept in the log is smaller than the one that was sent', async () => {
+  const asked = await (await fetch(`${base}/__lastask`)).json();
+  const kept = await review.evalJs(`chrome.storage.local.get('tutorChatLog').then((r) => {
+    const withImages = (r.tutorChatLog || [])
+      .flatMap((c) => c.messages || [])
+      .filter((m) => m.images && m.images.length);
+    const url = withImages.length ? withImages[withImages.length - 1].images[0] : '';
+    // The payload only, so this compares like with like against what was sent.
+    return { head: url.slice(0, 30), length: url.length - url.indexOf(',') - 1 };
+  })`);
+  assert.match(kept.head, /^data:image\/(webp|jpeg);base64,/,
+    `the log kept "${kept.head}" — not a shrunk picture`);
+  const sent = asked.images[0].data.length;
+  // A thumbnail is 150px against the 1120px that was sent, so this is not a
+  // close-run thing: if it ever becomes one, the shrink stopped happening.
+  assert.ok(kept.length * 4 < sent,
+    `the thumbnail (${kept.length}) is not meaningfully smaller than what was sent (${sent})`);
 });
 
 // The bug this was reported as: the model said it could not see any image,

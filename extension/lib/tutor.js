@@ -19,6 +19,7 @@
 
 import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './sync.js';
 import { postAi } from './aistatus.js';
+import { packChats } from './chatlog.js';
 import { icon } from './icons.js';
 import { buildProfile } from './profile.js';
 import { RESULTS_KEY } from './placement.js';
@@ -373,8 +374,6 @@ function iconButton(className, name, label, size) {
 // ---------------------------------------------------------------------------
 
 const STORE_KEY = 'tutorChatLog';
-const MAX_CHATS = 40;        // conversations kept before the oldest is dropped
-const MAX_STORED_TURNS = 60; // messages retained per conversation
 
 // Everything in one record so pruning is possible: per-chat keys would grow
 // without bound. Newest first, which is also the order the list renders in.
@@ -383,24 +382,14 @@ async function loadChats() {
   return Array.isArray(chats) ? chats : [];
 }
 
-// Attached thumbnails are the one thing in here big enough to matter: extension
-// storage is a few megabytes, and 40 chats of them would fill it. The last few
-// keep their pictures — long enough to still be reading the answer — and older
-// messages keep only the words.
-const KEEP_IMAGES = 6;
-
-function prune(messages) {
-  const kept = messages.slice(-MAX_STORED_TURNS);
-  return kept.map((msg, i) => (msg.images && i < kept.length - KEEP_IMAGES
-    ? { ...msg, images: undefined }
-    : msg));
-}
-
+// How many conversations, how many turns of each, and how many pictures across
+// the whole log are lib/chatlog.js — attached images are the most expensive
+// thing this extension stores, so that policy is written down and tested in one
+// place rather than spelled out here.
 async function writeChat(chat) {
   const chats = await loadChats();
   const rest = chats.filter((c) => c.id !== chat.id);
-  rest.unshift({ ...chat, messages: prune(chat.messages) });
-  await chrome.storage.local.set({ [STORE_KEY]: rest.slice(0, MAX_CHATS) });
+  await chrome.storage.local.set({ [STORE_KEY]: packChats([chat, ...rest]) });
 }
 
 async function deleteChat(id) {
@@ -454,7 +443,23 @@ const MAX_SHOTS = 3;      // per question; the Worker enforces the same cap
 const SEND_EDGE = 1120;   // longest side of what the model is shown
 const THUMB_EDGE = 150;   // longest side of what is kept in the conversation
 
-async function drawScaled(blob, edge, type, quality) {
+// Which encoding is smaller is not something you can tell by looking at the
+// picture, so both are made and the smaller one kept. WebP is dramatically
+// better on the flat backgrounds and crisp text of a screenshot — a 1120px one
+// measured 27 KB against JPEG's 70 KB — and can come out slightly *larger* than
+// JPEG on a noisy photograph. Quality is unchanged either way: the saving is in
+// the format, not in throwing away detail the tutor has to read Chinese out of.
+const ENCODINGS = ['image/webp', 'image/jpeg'];
+
+// A canvas asked for a type it cannot make answers with a PNG instead of an
+// error, and a PNG of a photograph is many times larger than either of these —
+// so an answer is only used when it is the type that was asked for.
+function encode(canvas, type, quality) {
+  const url = canvas.toDataURL(type, quality);
+  return url.startsWith(`data:${type};`) ? { mime: type, url } : null;
+}
+
+async function drawScaled(blob, edge, quality) {
   const bitmap = await createImageBitmap(blob);
   const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement('canvas');
@@ -462,19 +467,26 @@ async function drawScaled(blob, edge, type, quality) {
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
   canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close?.();
-  return canvas.toDataURL(type, quality);
+  const made = ENCODINGS.map((type) => encode(canvas, type, quality)).filter(Boolean);
+  if (!made.length) return { mime: 'image/png', url: canvas.toDataURL() };
+  return made.reduce((best, one) => (one.url.length < best.url.length ? one : best));
 }
 
 // -> { mime, data, thumb } | null. `data` is base64 without the data: prefix,
 // which is the shape /api/ask takes; `thumb` is a small data URL kept with the
 // question in the log, because a question about a picture makes no sense
-// afterwards without the picture.
+// afterwards without the picture. The two are encoded independently: a picture
+// can easily come out as WebP at one size and JPEG at the other.
 async function prepareShot(blob) {
   if (!blob || !IMAGE_TYPES.includes(blob.type)) return null;
   try {
-    const full = await drawScaled(blob, SEND_EDGE, 'image/jpeg', 0.82);
-    const thumb = await drawScaled(blob, THUMB_EDGE, 'image/jpeg', 0.6);
-    return { mime: 'image/jpeg', data: full.slice(full.indexOf(',') + 1), thumb };
+    const full = await drawScaled(blob, SEND_EDGE, 0.82);
+    const thumb = await drawScaled(blob, THUMB_EDGE, 0.6);
+    return {
+      mime: full.mime,
+      data: full.url.slice(full.url.indexOf(',') + 1),
+      thumb: thumb.url,
+    };
   } catch {
     return null; // an image the canvas cannot decode is not worth a dialog
   }
@@ -632,7 +644,7 @@ export function createTutor(options) {
   let shots = [];        // images attached to the question being written
   // The last set actually sent, at full size, kept for the rest of the sitting
   // so follow-up questions are still about the same picture. Not stored: only
-  // the small thumbnails go to disk (see prune()).
+  // the small thumbnails go to disk (see lib/chatlog.js).
   let sentShots = [];
   let busy = false;
   let viewingHistory = false; // the list of past chats is up instead of the log

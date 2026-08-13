@@ -427,10 +427,24 @@ sentence rather than half-applied.
 permission, and this app can get within sight of that on its own. The deck is
 not the problem — a word card is about 180 bytes, so a full 5,000-card library
 with its schedules is under a megabyte. The bulk is elsewhere: 60 news passages,
-and 40 tutor conversations whose last few messages keep their attached
-thumbnails (which is why `lib/tutor.js` drops images from older messages and
-stores 150px JPEGs rather than what you pasted). Together those can reach
-several megabytes.
+and — by a wide margin the most expensive thing here — the pictures attached to
+tutor questions.
+
+A stored thumbnail measures about **4.5 KB** of base64, and base64 is what it
+has to be: `chrome.storage` holds JSON, so a Blob or an ArrayBuffer cannot go in
+it, and the 33% the encoding costs is the price of keeping a picture there at
+all. What it is a thumbnail *of* is already handled — 150px on the longest side
+at the smaller of WebP and JPEG, never the multi-megabyte PNG that was on the
+clipboard. The arithmetic that was missing was the total: 40 conversations
+keeping pictures on their last 6 messages, 3 to a question, is **~3.2 MB**, and
+nothing bounded it.
+
+`lib/chatlog.js` now spends every picture in the log against **one budget**
+(1.5 MB, around 330 thumbnails) rather than per conversation, newest first: the
+pictures you might still be looking at are kept, and older ones fall back to
+their words. Nothing else about the log changes — every conversation, every
+message and every word stays. It is a hard ceiling on the one thing that had
+none.
 
 So the manifest asks for `unlimitedStorage`, which removes the `storage.local`
 cap and shows no permission warning at install. That is the fix; the rest is
@@ -495,7 +509,11 @@ credentials stay behind, that a mangled or newer-than-us file is refused with a
 sentence instead of half-applied, and — the property the whole feature rests on
 — that restoring cannot lose a card: work done since the backup survives it, a
 deletion since is not undone by it, and restoring twice is the same as
-restoring once.
+restoring once. `tests/chatlog.test.mjs` covers the ceiling on attached
+pictures: that the case the per-conversation rules alone allowed really is over
+3 MB, that packing brings it under budget without losing a conversation, a
+message or a word, that the newest pictures are the ones kept, and that once the
+budget is gone the log simply stops having pictures rather than acquiring holes.
 
 `node scripts/worker-smoke.mjs [url]` checks a **deployed** Worker rather than
 the source. Every other test imports `worker/src/index.js` and runs it in Node,
@@ -527,7 +545,11 @@ does not grade the card as Again, the card's own details reach the request
 the Worker receives, the drawer opens as a column beside the page rather than
 over it — with the page's scrollbar inside its own column and no document
 scroll left behind the chat — and a pasted image is attached, shrunk, kept with
-the question and actually sent. Highlight-to-ask is driven with a real press-drag-release
+the question and actually sent — pasted as a 1600×1200 photograph rather than a
+flat rectangle, which encodes to the same handful of bytes at every size and so
+proves nothing about the shrinking; the check that the thumbnail kept in the log
+is a fraction of what went over the wire needs a picture that can actually get
+smaller. Highlight-to-ask is driven with a real press-drag-release
 rather than a scripted selection — a synthetic `Selection` passes even when
 nothing on the page is actually selectable. The popup lives in a closed shadow
 root, so its contents are read through CDP's piercing traversal rather than a
@@ -916,6 +938,18 @@ thumbnail stays with the question in the log — above the bubble, the way it sa
 above the composer — because "what does this say?" is unreadable a day later
 without the picture.
 
+Both sizes are encoded **twice, as WebP and as JPEG, and the smaller one wins**.
+Which that is cannot be told by looking at the picture: on the flat backgrounds
+and crisp text of a screenshot WebP is dramatically better — a 1120px one
+measures 27 KB against JPEG's 70 KB — while on a noisy photograph it can come
+out slightly *larger*. Quality is identical either way, so this is a saving in
+the format rather than in detail the model has to read Chinese out of; dropping
+resolution is the one economy not made here, because reading 小心地滑 off a sign
+is exactly what the resolution is for. (A canvas asked for a type it cannot
+encode returns a PNG instead of an error, so the answer is only used when it is
+the type that was asked for — a PNG of a photograph is many times larger than
+either.)
+
 The picture then stays in the conversation: it travels with your follow-up
 questions until you attach a different one, so "and the second line?" is still
 about the same photograph. It used to be sent only with the turn it arrived in,
@@ -1037,6 +1071,9 @@ extension/          the unpacked extension (load this folder in Chrome)
                     navigable history, pasted images, the "Ask about this"
                     action it contributes to the shared selection bar, and the
                     call to /api/ask
+  lib/chatlog.js    what the tutor's log keeps when it cannot keep everything:
+                    chats, turns, and one budget for every attached picture in
+                    it — the most expensive thing stored (pure; tested)
   lib/tutorstate.js the one bit the navbar and the drawer share: whether the
                     drawer is open (profile-wide, so it follows you between
                     pages), and whether this page has a tutor at all
