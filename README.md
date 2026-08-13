@@ -575,9 +575,15 @@ The tutor runs on your own Worker at `POST /api/ask`, authenticated with the
 same private pairing token as sync and the news digest, and uses whichever model
 provider you already configured for [AI news digest](#ai-news-digest) — there is
 nothing extra to set up if news already works. It is capped at 40 questions per
-hour per user. Conversations are kept in local storage (12 turns each, 30 most
-recent threads), and every page works fully without a Worker; only the tutor
-needs one.
+hour per user. Every page works fully without a Worker; only the tutor needs
+one.
+
+**Conversations are a sitting, not a record.** They live in memory (12 turns
+each, 30 most recent threads), so moving between cards or guide levels returns
+you to what you were asking about, and closing the page ends it. Nothing is
+written to disk: a throwaway "what does this 了 do?" is not worth keeping
+forever, and the alternative left a transcript of every study session in local
+storage. An older build did persist them; the tutor deletes that key on load.
 
 ## Repo layout
 
