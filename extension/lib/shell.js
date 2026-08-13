@@ -16,7 +16,7 @@ import {
   SIMP_FIRST, TRAD_FIRST, getHanziPref, setHanziPref, onHanziPref,
 } from './hanzi.js';
 import { getAskOpen, setAskOpen, onAskOpen, onTutorPresence } from './tutorstate.js';
-import { AI_NOTICES, getAiStatus, onAiStatus } from './aistatus.js';
+import { AI_NOTICES, getAiStatus, onAiStatus, openOptionsAt } from './aistatus.js';
 import { icon } from './icons.js';
 
 // id -> { label, href, count }. `count` names the badge this tab carries.
@@ -249,15 +249,10 @@ export function mountShell({ active, onSelect } = {}) {
     if (!onSelect) notice.href = `options.html#${shown.target}`;
   }
 
-  // Straight to the field, not to the top of a long settings page — the point
-  // of pressing this is to fix the thing it named. Inside the dashboard the
-  // options page is a tab of its own, and openOptionsPage cannot carry a
-  // fragment, so the URL is built by hand.
-  if (onSelect) {
-    notice.addEventListener('click', () => {
-      chrome.tabs.create({ url: chrome.runtime.getURL(`options.html#${noticeTarget}`) });
-    });
-  }
+  // Straight to the field, not to the top of a long settings page: the point of
+  // pressing this is to fix the thing it just named. A standalone page is an
+  // <a> and navigates; the dashboard opens Options as a tab of its own.
+  if (onSelect) notice.addEventListener('click', () => openOptionsAt(noticeTarget, { newTab: true }));
   getAiStatus().then(paintNotice);
   onAiStatus(paintNotice);
 

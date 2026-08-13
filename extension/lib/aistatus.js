@@ -158,6 +158,24 @@ export async function clearAiFailure() {
   if (state && state.code !== AI_STALE_SERVER) await chrome.storage.local.remove(STATE_KEY);
 }
 
+// Open the settings page at the thing that needs fixing. A fragment is the
+// whole point — landing on the top of a six-section page having just pressed
+// "Add your API key" is the version of this that does not help — and
+// chrome.runtime.openOptionsPage() cannot carry one, so the URL is built by
+// hand. Inside the dashboard the options page is a tab of its own rather than
+// something to navigate this frame to.
+export function openOptionsAt(target = 'ai', { newTab = false } = {}) {
+  const url = `options.html#${target}`;
+  if (!newTab) {
+    location.href = url;
+    return;
+  }
+  // chrome.tabs.create needs no permission for an extension URL, but a surface
+  // without it should still get somewhere useful rather than nothing at all.
+  if (chrome.tabs?.create) chrome.tabs.create({ url: chrome.runtime.getURL(url) });
+  else chrome.runtime.openOptionsPage();
+}
+
 // ---------------------------------------------------------------------------
 // Calling a model-backed endpoint
 // ---------------------------------------------------------------------------

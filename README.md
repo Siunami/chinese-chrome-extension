@@ -283,6 +283,32 @@ any time, and every non-AI feature keeps working without one.
 tutor and the translator are short calls with hourly caps (40 and 200 per hour).
 Nothing generates on a page load — only when you click.
 
+**If the key is missing or wrong, the app says so.** Four features run on a
+model, and each used to find out about a missing or rejected key by failing
+inside itself, with a sentence only that page showed — a learner who had never
+pasted one met "could not reach the examiner" and had nothing to act on. The
+state belongs to the app now (`extension/lib/aistatus.js`), so the navbar wears
+an amber **Add your API key** — or **API key was rejected**, once a provider has
+actually refused it — on every page until it is dealt with, and pressing it
+lands on the key field itself rather than the top of the settings page.
+
+Two things it deliberately does *not* do. It never nags somebody whose
+deployment pays for its own calls: `/api/health` reports whether the server has
+a provider key and whether it expects the caller to bring one, which costs no
+model call, and a server that supplies its own raises nothing. And it never
+blames the key for something else — being offline, or a provider having a bad
+afternoon, leaves the bar alone. Only a provider actually answering 401/403
+(wrong key) or 429 (out of quota) does, which the Worker reports as
+`code: "provider_auth"` / `"provider_quota"` rather than as a generic 502.
+
+A fifth state uses the same slot: **Sync server is out of date**. Every `/api/*`
+route the Worker knows answers 401 without a token, so a 404 means the deployment
+is older than the extension calling it. That is how `/api/ask` shipped, was
+documented, and 404'd in the browser — and then `/api/placement` did the same
+thing, reaching the screen as the word "not found" beside a Try again button
+that could never work. Run `node scripts/worker-smoke.mjs` after `wrangler
+deploy`, and the app will tell you if you forget.
+
 ### What runs where
 
 | Feature | Needs a key | Needs the Worker |
@@ -368,7 +394,13 @@ as an image — with the type, size and count caps refusing a bad one without
 spending one of the learner's forty questions. `tests/translate.test.mjs` and `tests/translate-sweep.test.mjs` cover the two
 halves of card translation — the endpoint's guards, budget and clamping, and
 the client's decisions about what to send, what to retry, and what to leave
-alone when a request fails. `tests/placement.test.mjs` covers the placement
+alone when a request fails. `tests/aistatus.test.mjs` covers the thing that
+turns a broken API key into something the learner can act on: that `/api/health`
+reports a deployment's key situation without spending a model call, that a
+provider refusing a key is told apart from a provider having a bad afternoon on
+every endpoint (including the one that would otherwise hide it behind a cached
+digest), and — the property that matters most — that a deployment paying for its
+own calls raises no banner at all. `tests/placement.test.mjs` covers the placement
 interview from both ends — the ladder driven through the sequences of marks a
 real run produces (every shape of learner terminates, inside the turn cap; a
 level held above one that came apart is read as a gap rather than a placement;
@@ -854,6 +886,9 @@ extension/          the unpacked extension (load this folder in Chrome)
   placement.html/js the interview itself, and the report it leaves behind
   lib/merge.js      per-card sync merge rules (shared with worker + pwa)
   lib/sync.js       sync client: push/pull against the worker
+  lib/aistatus.js   whether the AI features can work (key present? refused by the
+                    provider? server too old?) and the one POST every model-backed
+                    call goes through — the navbar's notice reads it (tested)
   lib/qr.js         vendored qrcode-generator (MIT) for the pairing QR
   data/             generated: dict.tsv (CC-CEDICT), sentences.tsv (Tatoeba)
   options.html/js   settings (theme, tone colors, examples, phone pairing, …)

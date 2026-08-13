@@ -22,7 +22,8 @@ import { createLookup } from './lib/lookup.js';
 import { mountShell } from './lib/shell.js';
 import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './lib/sync.js';
 import {
-  AI_BAD_KEY, AI_NO_KEY, AI_NO_QUOTA, AI_NOTICES, AI_STALE_SERVER, postAi,
+  AI_BAD_KEY, AI_NO_KEY, AI_NO_QUOTA, AI_NOTICES, AI_STALE_SERVER,
+  openOptionsAt, postAi,
 } from './lib/aistatus.js';
 import { guideByLevel } from './guides/index.js';
 
@@ -291,13 +292,8 @@ function renderInterview() {
       // being told the same thing. Send them where the fix is instead — and
       // keep a retry beside it, for once they are back.
       const target = AI_NOTICES[run.errorCode]?.target || 'ai';
-      actions.append(button('primary', 'Open Options', () => {
-        if (window.parent !== window) {
-          chrome.tabs.create({ url: chrome.runtime.getURL(`options.html#${target}`) });
-        } else {
-          location.href = `options.html#${target}`;
-        }
-      }));
+      actions.append(button('primary', 'Open Options',
+        () => openOptionsAt(target, { newTab: window.parent !== window })));
       actions.append(button('', 'Try again', retry));
     } else {
       // Retry re-sends the answer already sitting on the turn, so a dropped

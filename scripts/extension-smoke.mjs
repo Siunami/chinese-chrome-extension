@@ -722,6 +722,14 @@ await check('news opens on the last article and offers the ones before it', asyn
   assert.match(await newsTab.evalJs('document.getElementById("history").textContent'),
     /\(2\)/, 'the archive button does not say how much is in it');
 });
+// Suggesting categories is a model call, so a page load must not make one: with
+// nothing cached the row is an offer, not a row of chips.
+await check('the category row waits to be asked before it costs anything', async () => {
+  const chips = await newsTab.evalJs(
+    '[...document.querySelectorAll("#cats button")].map(b => b.textContent)');
+  assert.deepEqual(chips, ['Suggest topics for me'],
+    `a page load should suggest nothing on its own; got ${chips.join(', ')}`);
+});
 await check('the archive lists past articles under the day they were written', async () => {
   await newsTab.evalJs('document.getElementById("history").click()');
   await newsTab.waitFor('document.querySelectorAll(".past").length === 2', 'both articles');
