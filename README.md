@@ -359,9 +359,10 @@ saves it, a drag over a paragraph gets the refusal instead of a card, and a
 drag over English raises nothing at all. It also drives the tutor end to end: the drawer is refused on
 the question side and offered on the answer, typing `1` into the question box
 does not grade the card as Again, the card's own details reach the request
-the Worker receives, the drawer opens below the navbar and pushes the page
-clear of itself rather than covering it, and a pasted image is attached,
-shrunk, kept with the question and actually sent. Highlight-to-ask is driven with a real press-drag-release
+the Worker receives, the drawer opens as a column beside the page rather than
+over it — with the page's scrollbar inside its own column and no document
+scroll left behind the chat — and a pasted image is attached, shrunk, kept with
+the question and actually sent. Highlight-to-ask is driven with a real press-drag-release
 rather than a scripted selection — a synthetic `Selection` passes even when
 nothing on the page is actually selectable. The popup lives in a closed shadow
 root, so its contents are read through CDP's piercing traversal rather than a
@@ -590,9 +591,17 @@ are looking at changes with the page:
 **Ask is part of the app bar.** The tutor used to be a pill floating over the
 bottom-right corner of whatever you were reading — a second piece of chrome
 competing with the app's own. It is a switch in the navbar now: press it and the
-drawer takes the right-hand side, press it again and the page has it back. The
-bar itself does not move; the content below it reflows into what is left, the
-way a devtools panel works, so nothing is ever hidden underneath the drawer.
+drawer takes the right-hand side, press it again and the page has it back.
+
+The drawer is a **column of the app, not a sheet over it**. Every page that
+wears the navbar is a viewport-height shell — the bar, then a row holding the
+page and the drawer side by side — so the page scrolls inside its own column and
+the drawer scrolls inside its own. That is why the scrollbar beside the chat
+belongs to the page and stops where the chat starts; when the drawer was fixed
+over a padded-out body, the document's scrollbar ran down the *outside* of the
+chat, looking like the chat's own and scrolling the article behind it. The bar
+never moves, and nothing is ever hidden underneath the drawer.
+
 The switch is one bit for the whole profile, which is why the drawer is still
 open, with the same conversation in it, when you move to another page or another
 dashboard tab.
@@ -655,8 +664,10 @@ can use the thing.
 extension/          the unpacked extension (load this folder in Chrome)
   manifest.json     MV3 manifest
   shell.css         the app's look: navbar, page frame, shared control styles
-  lib/shell.js      builds that navbar — one nav for every page, links on a
-                    standalone page and frame-swapping buttons in the dashboard
+  lib/shell.js      builds that navbar and the shell under it — the page's own
+                    scrolling column with the tutor drawer beside it. One nav
+                    for every page: links on a standalone page, frame-swapping
+                    buttons in the dashboard
   background.js     service worker: loads dictionary + sentences, answers lookups
   lib/popup.js      THE popup: definitions, examples, characters, related words,
                     save/copy/pronounce, nested-definition history (shadow DOM).

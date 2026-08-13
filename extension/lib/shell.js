@@ -232,6 +232,31 @@ export function mountShell({ active, onSelect } = {}) {
     settings.href = 'options.html';
   }
 
+  // The app is a viewport-height shell: the bar, and under it a row holding the
+  // page and — when it is open — the tutor drawer beside it.
+  //
+  // The drawer used to be fixed over the right-hand side with the body padded
+  // out of its way, which left the document's own scrollbar running down the
+  // outside of it: a scrollbar that looked like the chat's and scrolled the
+  // article. The page scrolls in its own column now and the drawer is a sibling
+  // of it, so the scrollbar stops where the drawer starts and belongs to the
+  // thing it is next to. Everything the page rendered moves into that column;
+  // <script> elements stay where they are, since a moved script is a question
+  // nobody needs to think about.
+  const main = el('div', 'zx-main');
+  const page = el('div', 'zx-page');
+  // The document itself no longer scrolls, so the column has to be reachable
+  // from the keyboard or Page Down stops working the moment the drawer is part
+  // of the layout. This is the standard fix for a scrollable region.
+  page.tabIndex = 0;
+  page.append(...[...document.body.childNodes].filter((n) => n.nodeName !== 'SCRIPT'));
+  main.append(page);
+  // A tutor that mounted before the shell (no page does today, but the order is
+  // not enforced anywhere) is moved into the row rather than left behind.
+  for (const drawer of document.querySelectorAll('.tutor-drawer')) main.append(drawer);
+  document.body.classList.add('zx-shell');
+  document.body.append(main);
+
   header.append(brand, nav, el('div', 'zx-spacer'), script, ask, settings);
   document.body.prepend(header);
 

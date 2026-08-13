@@ -34,29 +34,37 @@ const TUTOR_CSS = `
   .tutor {
     display: flex; flex-direction: column; min-height: 0;
     background: #faf8f2; color: #222; text-align: left;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    /* The app's own face where there is one — the drawer is part of the app,
+       not a widget dropped onto it — and the same stack by hand where the
+       tokens are absent. */
+    font-family: var(--zx-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
     font-size: 15px;
   }
   .tutor[hidden] { display: none !important; }
-  /* Below the navbar, never over it: --tutor-top is the height of the bar on
-     this page, measured when the drawer opens (0 inside the dashboard, where
-     the bar belongs to the parent document). */
+  /* A column of the app, not a sheet over it: the shell (lib/shell.js) puts the
+     drawer next to the page's own scrolling column, so the page keeps its
+     scrollbar on its own side of the border and nothing is hidden underneath
+     the chat. The fixed form is the fallback for a host with no shell. */
   .tutor-drawer {
-    position: fixed; top: var(--tutor-top, 0px); right: 0; bottom: 0;
-    width: var(--tutor-w, min(370px, 100vw));
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: clamp(260px, 34vw, 370px);
     z-index: 2147483646; border-left: 1px solid #ddd5c4;
     box-shadow: -6px 0 26px rgba(60, 48, 24, 0.16);
+  }
+  .zx-main > .tutor-drawer {
+    position: static; flex: none; width: clamp(260px, 34vw, 370px);
+    box-shadow: none;
   }
   /* The slide belongs to the act of opening it, and to nothing else. Every page
      builds its own drawer, so animating whenever one appears means replaying
      the whole thing on every tab you visit with the tutor already open — the
      drawer is not opening then, it was never shut. The tutor-anim class is put
-     on for the length of one press and taken straight off again. */
-  html.tutor-anim .tutor-drawer {
-    animation: tutor-slide-in 0.2s cubic-bezier(0.3, 0.7, 0.3, 1);
+     on for the length of one press and taken straight off again, and the page
+     beside it widens in the same motion because the two share the row. */
+  html.tutor-anim .zx-main > .tutor-drawer { transition: margin-right 0.2s cubic-bezier(0.3, 0.7, 0.3, 1); }
+  @media (prefers-reduced-motion: reduce) {
+    html.tutor-anim .zx-main > .tutor-drawer { transition: none; }
   }
-  @keyframes tutor-slide-in { from { transform: translateX(100%); } }
-  @media (prefers-reduced-motion: reduce) { html.tutor-anim .tutor-drawer { animation: none; } }
 
   /* Header. Two rows rather than one: the title and its controls share the
      first, and the subtitle gets the full width underneath instead of being
@@ -287,29 +295,11 @@ const TUTOR_CSS = `
   .tutor button.send:hover:not(:disabled) { background: #fdf0a8; }
   .tutor button.send:disabled { opacity: 0.45; cursor: default; }
 
-  /* The drawer takes its space from the page rather than sitting on top of it:
-     the body is padded by the drawer's width, so the content reflows into what
-     is left — a devtools panel, not a sheet over the article. Without it the
-     drawer covers the grade buttons on a small window.
-   *
-     The navbar is the exception. It is where the Ask switch lives, so having it
-     jump left the moment you press it is the one thing that would read as the
-     app coming apart; the negative margin gives it back exactly the width the
-     body gave up, and it sticks to the top so the drawer below it never opens
-     onto a gap. */
-  html.tutor-drawer-open body {
-    padding-right: var(--tutor-w, min(370px, 100vw));
-  }
-  /* Only while the switch is actually being pressed: a page that loads with the
-     drawer already open should be laid out that way, not seen to squeeze into
-     it. */
-  html.tutor-anim body { transition: padding-right 0.2s cubic-bezier(0.3, 0.7, 0.3, 1); }
-  html.tutor-drawer-open .zx-header {
-    position: sticky; top: 0; z-index: 6;
-    margin-right: calc(-1 * var(--tutor-w, min(370px, 100vw)));
-  }
-  @media (prefers-reduced-motion: reduce) {
-    html.tutor-anim body { transition: none; }
+  /* Without a shell to sit in there is nothing to push, so the fixed drawer
+     narrows the document instead — the fallback path, and the only way to keep
+     it off the top of the content. */
+  html.tutor-drawer-open body:not(.zx-shell) {
+    padding-right: clamp(260px, 34vw, 370px);
   }
   ::highlight(tutor-quote) {
     background-color: rgba(201, 165, 92, 0.35);
@@ -574,7 +564,10 @@ export function createTutor(options) {
   root.append(head, logEl, composerEl);
 
   root.hidden = true;
-  document.body.append(root);
+  // Beside the page's own column if this page wears the app shell, which is
+  // what makes the drawer part of the layout rather than something laid over
+  // it. lib/shell.js mounts first on every page that has both.
+  (document.querySelector('.zx-main') || document.body).append(root);
 
   let chat = newChat();  // the conversation on screen
   let history = chat.messages;
@@ -1038,14 +1031,6 @@ export function createTutor(options) {
   // How much room the drawer takes, and where the navbar ends. Measured rather
   // than assumed: the bar is 64px on a wide window, shorter on a narrow one,
   // and absent altogether inside the dashboard's frames.
-  function measure() {
-    const header = document.querySelector('.zx-header');
-    const top = header && header.offsetParent !== null ? header.getBoundingClientRect().height : 0;
-    const style = document.documentElement.style;
-    style.setProperty('--tutor-top', `${Math.round(top)}px`);
-    style.setProperty('--tutor-w', `${Math.min(370, Math.round(window.innerWidth * 0.9))}px`);
-  }
-
   // The slide is the answer to "you pressed the switch". It is not the answer to
   // "this page has finished loading and the drawer was already open", which is
   // what every tab change would otherwise look like — so motion is switched on
@@ -1058,12 +1043,27 @@ export function createTutor(options) {
       () => document.documentElement.classList.remove('tutor-anim'), 350);
   }
 
+  // In the row, the drawer opens by giving up a negative right margin: it
+  // starts one drawer-width off the edge and slides into the space the page
+  // yields as it goes, which is one movement rather than a panel arriving over
+  // a page that jumped. No paint happens between un-hiding it and setting the
+  // margin, so there is nothing to flash.
+  function slideIn() {
+    if (!root.parentElement?.classList.contains('zx-main')) return;
+    const width = root.getBoundingClientRect().width;
+    if (!width) return;
+    root.style.marginRight = `${-width}px`;
+    requestAnimationFrame(() => { root.style.marginRight = '0px'; });
+  }
+
   function apply(animate = false) {
     const showing = wantOpen && available;
-    if (showing) measure();
-    if (animate && showing !== !root.hidden) withMotion();
+    const changed = showing !== !root.hidden;
+    if (animate && changed) withMotion();
     root.hidden = !showing;
+    root.style.marginRight = '0px';
     document.documentElement.classList.toggle('tutor-drawer-open', showing);
+    if (animate && changed && showing) slideIn();
   }
 
   function open() {
@@ -1084,7 +1084,6 @@ export function createTutor(options) {
     wantOpen = next;
     apply(true);
   });
-  window.addEventListener('resize', () => { if (!root.hidden) measure(); });
 
   // The page has moved to a new card, level or digest. The conversation does
   // not change — it follows you, and each question records where it was asked

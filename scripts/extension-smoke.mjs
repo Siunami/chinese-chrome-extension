@@ -843,6 +843,7 @@ await check('the guides open the tutor as a drawer, not a docked column', async 
   await hsk.shot('tutor-drawer-guides');
   await hsk.evalJs('document.querySelector(".tutor-close").click()');
 });
+
 // The toggle has to move the whole app, not just the surfaces that happen to
 // store both forms. A guide is written in simplified, so flipping to
 // traditional has to convert it — and by word, so 发 lands right.
@@ -1325,6 +1326,42 @@ await check('a full library fits its column without overflowing', async () => {
   assert.ok(m.defWidth >= 150, `the definition column collapsed to ${m.defWidth}px`);
   assert.equal(m.headerCells, 8, 'unexpected column count');
   assert.deepEqual(library.errors, []);
+});
+
+// The drawer is a column of the app, not a sheet over it. It used to be fixed
+// on top of a padded-out body, which left the document's own scrollbar running
+// down the outside of the chat: a scrollbar that looked like the chat's and
+// scrolled the article behind it.
+await check('the drawer is in the layout, and the page keeps its own scrollbar', async () => {
+  await library.setViewport(1365, 900);
+  await openDrawer(library);
+  await library.waitFor('document.querySelector(".tutor").getAnimations().length === 0',
+    'the drawer to finish sliding');
+  const layout = await library.evalJs(`(() => {
+    const drawer = document.querySelector('.tutor');
+    const page = document.querySelector('.zx-page');
+    const r = drawer.getBoundingClientRect();
+    const p = page.getBoundingClientRect();
+    return {
+      sibling: drawer.parentElement === page.parentElement,
+      fixed: getComputedStyle(drawer).position === 'fixed',
+      pageScrolls: page.scrollHeight > page.clientHeight + 1,
+      // The page's scrollbar lives inside its own column, so it stops where
+      // the drawer starts rather than running down the far side of it.
+      gutter: Math.round(p.width - page.clientWidth),
+      pageRight: Math.round(p.right),
+      drawerLeft: Math.round(r.left),
+      documentScrolls: document.documentElement.scrollHeight > innerHeight + 1,
+    };
+  })()`);
+  assert.ok(layout.sibling, 'the drawer is not a sibling of the page column');
+  assert.ok(!layout.fixed, 'the drawer is still floating over the page');
+  assert.ok(layout.pageScrolls, 'this check needs a page long enough to scroll');
+  assert.ok(layout.gutter > 0, 'the page column has no scrollbar of its own');
+  assert.ok(!layout.documentScrolls,
+    'the document still scrolls behind the drawer, so its scrollbar sits outside the chat');
+  assert.ok(Math.abs(layout.pageRight - layout.drawerLeft) <= 1,
+    `page ends at ${layout.pageRight}, drawer starts at ${layout.drawerLeft}`);
 });
 
 // Narrower than the table's floor it must scroll inside #list rather than

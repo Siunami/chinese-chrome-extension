@@ -45,6 +45,27 @@
    overflows the viewport at the width the measure was chosen for. */
 * { box-sizing: border-box; }
 
+/* --- the shell ----------------------------------------------------------- */
+
+/* Every page that mounts the navbar becomes a viewport-height frame: the bar,
+   then a row holding the page and the tutor drawer side by side. The page
+   scrolls inside its own column rather than the document scrolling underneath
+   a fixed drawer — which is what used to leave the document's scrollbar running
+   down the outside of the chat, looking like the chat's own. */
+body.zx-shell {
+  margin: 0; height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.zx-main { flex: 1; min-height: 0; display: flex; align-items: stretch; }
+.zx-page {
+  flex: 1; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; overflow-y: auto;
+}
+/* Focusable for the keyboard, but clicking into the page is not a thing worth
+   drawing a ring around; tabbing to it still is. */
+.zx-page:focus { outline: none; }
+.zx-page:focus-visible { outline: 2px solid var(--zx-red); outline-offset: -3px; }
+
 /* --- the navbar ---------------------------------------------------------- */
 
 .zx-header {
@@ -203,10 +224,12 @@ body.embedded .zx-header { display: none; }
    own their whole viewport (the guides, with its level rail) leave it off and
    just take the navbar. */
 body.zx-app {
-  margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+  margin: 0; min-height: 100vh;
   background: var(--zx-paper); color: var(--zx-ink);
   font-family: var(--zx-font); font-size: 15px;
 }
+/* The measure column is centred in whatever width the page column has, so it
+   re-centres when the drawer opens instead of being nudged sideways. */
 body.zx-app .zx-content {
   flex: 1; width: 100%; max-width: var(--zx-measure);
   margin: 22px auto 40px; padding: 26px 28px;
