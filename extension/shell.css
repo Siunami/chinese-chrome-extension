@@ -88,14 +88,16 @@ body.embedded .zx-header { display: none; }
 .tab.active {
   border-color: #d8cab5; background: var(--zx-highlight); color: var(--zx-red-deep);
 }
-.count {
+/* Scoped to the navbar: `.count` is also a page-level class (the library's
+   "97 cards"), and unscoped this turned that caption into a grey pill. */
+.zx-header .count {
   min-width: 19px; padding: 1px 6px; border-radius: 10px;
   background: rgba(0, 0, 0, 0.08); font-size: 10px; text-align: center;
   font-variant-numeric: tabular-nums;
 }
-.tab.active .count { background: rgba(181, 35, 43, 0.12); }
+.zx-header .tab.active .count { background: rgba(181, 35, 43, 0.12); }
 /* Zero due cards is not news; an empty library is not either. */
-.count:empty, .count[data-zero="1"] { display: none; }
+.zx-header .count:empty, .zx-header .count[data-zero="1"] { display: none; }
 
 .zx-spacer { flex: 1; }
 
@@ -128,7 +130,9 @@ body.zx-app {
 }
 body.zx-app .zx-content {
   flex: 1; width: 100%; max-width: var(--zx-measure);
-  margin: 22px auto 48px; padding: 26px 28px;
+  /* The bottom margin clears the tutor's fixed launcher, which otherwise
+     sits on top of the last row of whatever the page is showing. */
+  margin: 22px auto 76px; padding: 26px 28px;
   border: 1px solid var(--zx-line); border-radius: 13px;
   background: var(--zx-surface); box-shadow: 0 3px 18px rgba(60, 48, 24, 0.07);
 }

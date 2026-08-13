@@ -8,28 +8,57 @@
     :root { --zx-measure: 1040px; }
     body.zx-app { font-size: 14px; }
     .toolbar { margin: 12px 0 20px; display: flex; gap: 10px; align-items: center; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #e4e4e4; vertical-align: top; }
+
+    /* The table used to size itself: every column but Definition was nowrap,
+       so with `table-layout: auto` they each claimed their widest row and the
+       table grew past the page, spilling Next and the delete button onto the
+       background while Definition was crushed to three words a line. Fixed
+       layout means these widths are the whole story, and Definition — the one
+       column that genuinely wants the slack — absorbs the remainder. */
+    #list { overflow-x: auto; } /* narrow windows scroll the table, not the page */
+    /* min-width is the floor that keeps this readable. Every column is sized,
+       so under `table-layout: fixed` they shrink *proportionally* when the
+       table is narrower than their sum — no single column can be squeezed to
+       nothing. Leaving Definition unsized did exactly that: at 880px the
+       percentages and pixel columns ate the whole table and it collapsed to a
+       few pixels, stacking the header one letter per line. */
+    table { border-collapse: collapse; width: 100%; min-width: 860px; table-layout: fixed; }
+    th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #e4e4e4;
+      vertical-align: top; }
+    td { overflow-wrap: anywhere; } /* headers must never break mid-word */
     th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #888; }
-    td.hanzi { font-size: 18px; white-space: nowrap;
+    th:nth-child(1) { width: 21%; }  /* Card */
+    th:nth-child(2) { width: 8%; }   /* Trad. */
+    th:nth-child(3) { width: 14%; }  /* Pinyin */
+    th:nth-child(4) { width: 20%; }  /* Definition */
+    th:nth-child(5) { width: 88px; } /* Saved */
+    th:nth-child(6) { width: 182px; }/* Progress: fits "· 1 rep · ease 2.50" */
+    th:nth-child(7) { width: 88px; } /* Next */
+    th:nth-child(8) { width: 38px; } /* remove */
+
+    td.hanzi { font-size: 18px;
       font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
-    tr.sentence-card td.hanzi { min-width: 240px; white-space: normal;
-      font-size: 16px; line-height: 1.55; }
-    tr.sentence-card td.pinyin { min-width: 220px; white-space: normal; line-height: 1.45; }
-    .type-badge { display: inline-block; margin-left: 6px; padding: 1px 5px;
+    tr.sentence-card td.hanzi { font-size: 16px; line-height: 1.55; }
+    tr.sentence-card td.pinyin { line-height: 1.45; }
+    /* Headword, badge and speaker on one baseline — the button used to drop to
+       its own line as soon as the text filled the column. */
+    .card-cell { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px; }
+    .type-badge { padding: 1px 5px;
       border-radius: 8px; background: #eef4ff; color: #416895; font: 700 9px/1.5
       -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-transform: uppercase; }
-    .speak { margin-left: 5px; padding: 2px 5px; border: 0; border-radius: 50%;
+    .speak { padding: 2px 5px; border: 0; border-radius: 50%;
       background: transparent; font-size: 12px; opacity: 0.58; }
     .speak:hover { background: #eef4ff; opacity: 1; }
-    td.pinyin { white-space: nowrap; color: #444; }
-    td.meta { white-space: nowrap; color: #777; font-size: 12.5px; }
-    td.status { white-space: nowrap; font-size: 12.5px; }
+    td.pinyin { color: #444; }
+    td.meta { color: #777; font-size: 12.5px; }
+    td.meta .touches { color: #aaa; }
+    td.status { font-size: 12.5px; }
     .st-new { color: #1a6fd4; font-weight: 600; }
     .st-due { color: #b5232b; font-weight: 600; }
     .st-later { color: #0a7a2f; }
-    td.del { width: 30px; }
-    td.del button { padding: 1px 7px; color: #a33; }
+    td.del button { padding: 1px 6px; border: 0; background: none; color: #a33;
+      font-size: 13px; line-height: 1.4; cursor: pointer; border-radius: 6px; }
+    td.del button:hover { background: #fbe4e4; }
     .empty { color: #888; margin-top: 24px; }
     .count { color: #888; font-size: 13px; margin-left: auto; }
 
@@ -62,8 +91,7 @@
     .sort select { font-size: 12px; padding: 3px 5px; }
 
     /* Per-card schedule. */
-    td.sched { white-space: nowrap; }
-    .sched-top { display: flex; align-items: center; gap: 7px; }
+    .sched-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
     .stage-chip { font-size: 10px; font-weight: 700; letter-spacing: 0.03em;
       text-transform: uppercase; padding: 1px 6px; border-radius: 9px;
       background: #f1f1f1; color: #666; }

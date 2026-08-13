@@ -60,7 +60,7 @@ const CSS = `
   text-align: center; font-variant-numeric: tabular-nums; margin-bottom: 2px; }
 .fc-axis { display: flex; gap: 2px; margin-top: 5px; }
 .fc-tick { flex: 1 1 0; min-width: 0; text-align: center; font-size: 10px;
-  color: var(--viz-muted); white-space: nowrap; overflow: hidden; }
+  color: var(--viz-muted); white-space: nowrap; overflow: visible; }
 .fc-tick[data-today="1"] { color: var(--viz-accent); font-weight: 700; }
 .fc-note { font-size: 11.5px; color: var(--viz-muted); margin-top: 8px; }
 
@@ -173,7 +173,12 @@ export function forecastChart(words, now, { days = 14, title = 'Coming up', newT
     col.addEventListener('blur', () => readout.replaceChildren());
     plot.append(col);
 
-    const tick = el('div', 'fc-tick', dayLabel(bin.start, bin.offset));
+    // One tick per bar keeps the axis aligned, but at 21 days each slot is
+    // ~24px — narrower than the word "today", which was rendering as "toda".
+    // Label today and every third day, and let those labels overflow into the
+    // blank slots either side rather than clipping.
+    const labelled = bin.offset === 0 || bin.offset % 3 === 0;
+    const tick = el('div', 'fc-tick', labelled ? dayLabel(bin.start, bin.offset) : '');
     if (bin.offset === 0) tick.dataset.today = '1';
     axis.append(tick);
   }
