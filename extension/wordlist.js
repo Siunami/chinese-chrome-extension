@@ -425,8 +425,10 @@ function renderImportPreview(summary) {
     const text = el('div', 'imp-text');
     const face = forms(item.card, hanziPref);
     const headline = el('div', 'imp-word');
-    headline.append(el('span', 'imp-hanzi', face.primary));
-    if (face.secondary) headline.append(el('span', 'imp-alt', face.secondary));
+    // Hoverable like every other run of hanzi in the app — deciding whether to
+    // keep a card is exactly when you want to look it up.
+    headline.append(lookup.hoverable('span', 'imp-hanzi', face.primary));
+    if (face.secondary) headline.append(lookup.hoverable('span', 'imp-alt', face.secondary));
     if (item.pinyin) headline.append(el('span', 'imp-pinyin', item.pinyin));
     // Worth flagging: this row's definition is Pleco's, not the dictionary's.
     if (!item.known) headline.append(el('span', 'imp-badge', 'not in CC-CEDICT'));

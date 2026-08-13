@@ -130,7 +130,8 @@ function paint(data, fetchedAt) {
   const chips = el('div', 'chips');
   if (data.level) chips.append(el('span', 'chip level', data.level));
   if (data.targetHsk) chips.append(el('span', 'chip', `reading at HSK ${data.targetHsk}`));
-  for (const topic of data.topics || []) chips.append(el('span', 'chip', topic));
+  // Topics come back in Chinese as often as not, so they are hoverable too.
+  for (const topic of data.topics || []) chips.append(lookup.hoverable('span', 'chip', topic));
   if (chips.childElementCount) appEl.append(chips);
 
   if (data.title) {
@@ -152,7 +153,10 @@ function paint(data, fetchedAt) {
     section.append(head);
     for (const g of data.glossary) {
       const row = el('div', 'gloss-row');
-      row.append(el('div', 'gloss-word', g.word));
+      // The stretch words are the hardest Chinese on the page and the most
+      // worth looking up, so they get the same popup the passage does — they
+      // were the one run of hanzi here rendered as plain text.
+      row.append(lookup.hoverable('div', 'gloss-word', g.word));
       row.append(el('div', 'gloss-pinyin', g.pinyin || ''));
       row.append(speakButton(g.word, `Play ${g.word}`));
       row.append(el('div', 'gloss-meaning', g.meaning || ''));

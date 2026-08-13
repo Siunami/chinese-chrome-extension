@@ -175,4 +175,31 @@ test('the HSK page ships with the guide data it renders', () => {
     'background.js must answer pinyinBatch');
 });
 
+// Any Chinese anywhere in the app should open the popup. The exceptions are
+// never deliberate — a run of hanzi gets rendered with the plain el() helper
+// instead of lookup.hoverable() and nothing complains, because it looks right;
+// it just does not respond to the pointer. The news glossary shipped that way,
+// which is the worst place for it: the stretch words are the hardest Chinese on
+// the page and the ones most worth looking up.
+test('every run of hanzi a page prints is hoverable', () => {
+  // (file, the element that must be built with lookup.hoverable, why)
+  const mustHover = [
+    ['news.js', "'gloss-word'", 'the stretch vocabulary list'],
+    // Matched on `data.topics` rather than the class: the chip row also holds
+    // an English "reading at HSK 2" chip, which is not Chinese and not hoverable.
+    ['news.js', 'data.topics', 'the topic chips, which come back in Chinese'],
+    ['wordlist.js', "'imp-hanzi'", 'headwords in the Pleco import preview'],
+  ];
+  for (const [file, marker, what] of mustHover) {
+    const source = read(file);
+    const at = source.indexOf(marker);
+    assert.notEqual(at, -1, `${file} no longer renders ${marker} — update this list`);
+    // The call has to be lookup.hoverable(...), not el(...): find the opening
+    // of the statement this class name belongs to.
+    const line = source.slice(source.lastIndexOf('\n', at) + 1, source.indexOf('\n', at));
+    assert.match(line, /lookup\.hoverable\(/,
+      `${file}: ${what} (${marker}) is rendered as plain text, so it cannot be hovered`);
+  }
+});
+
 console.log(`pages.test.mjs: ${passed} tests passed`);
