@@ -23,6 +23,7 @@ const ROUTES = [
   { path: '/api/sync', method: 'POST', expect: [401] },
   { path: '/api/news', method: 'POST', expect: [401] },
   { path: '/api/ask', method: 'POST', expect: [401] },
+  { path: '/api/placement', method: 'POST', expect: [401] },
   { path: '/api/translate', method: 'POST', expect: [401] },
 ];
 

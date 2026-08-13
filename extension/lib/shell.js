@@ -23,6 +23,7 @@ export const VIEWS = [
   { id: 'review', label: 'Review', href: 'review.html', count: 'due' },
   { id: 'library', label: 'Library', href: 'wordlist.html', count: 'saved' },
   { id: 'guides', label: 'Guides', href: 'hsk.html' },
+  { id: 'placement', label: 'Level', href: 'placement.html' },
   { id: 'news', label: 'News', href: 'news.html' },
 ];
 

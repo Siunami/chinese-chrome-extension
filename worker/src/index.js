@@ -46,6 +46,14 @@ const NEWS_PER_QUERY = 6;
 // it is capped per user per hour.
 const ASK_PER_HOUR = 40;
 
+// /api/placement: one turn of the adaptive placement interview — mark the
+// answer the learner just typed, then set the next task at the level the
+// client asked for. The client owns the ladder (extension/lib/placement.js);
+// this endpoint is stateless and never decides when the interview ends, so a
+// run's length and cost are known in advance. Capped per user per hour in
+// turns, since one interview is a dozen or so calls.
+const PLACEMENT_PER_HOUR = 60;
+
 // /api/translate: an English back for a card whose Chinese is not in the
 // dictionary or the example corpus — a sentence highlighted in an article, or
 // one the tutor just wrote. Without it such a card falls back to a word-by-word
@@ -1018,6 +1026,226 @@ async function handleTranslate(request, env) {
   return json({ translation, literal: clean(parsed.literal), generatedAt: now });
 }
 
+// ---------------------------------------------------------------------------
+// The placement interview
+// ---------------------------------------------------------------------------
+
+const PLACEMENT_SYSTEM = `You are a Mandarin examiner running a spoken-style placement interview in text. The learner types their replies. You conduct the interview one turn at a time: you mark the reply they just gave, then set the next task.
+
+The interview is adaptive, and the client owns the ladder. It tells you which HSK levels this turn may be aimed at — usually a suggested level and the one either side of it — and gives you the published descriptors for each. You may pick any level from that list and no other. Pick it AFTER marking the reply below: take the suggested level unless that reply clearly says otherwise, step up if they handled the last task easily, step down if it defeated them. Never go outside the list, even if you think the right level is elsewhere; a level missing from it has already been ruled out or already been asked about enough.
+
+WRITING THE TASK
+- Write it in Mandarin, pitched at the level you picked. One task per turn, two or three sentences at most.
+- Vary what you ask for across the interview: answer a question about their life, react to a situation, retell something you just said, explain a preference and why, translate one short English sentence, or complete a sentence you start. Do not ask the same kind of thing twice in a row.
+- Levels 1-2 may carry a short English gloss in brackets after the Chinese. Level 3 and up must be Chinese only — reading the question is part of the test.
+- Lean on words the learner's deck says they know, so a stumble is about the level and not about one unlucky word. Where the deck lists words they keep failing, work one in when it fits naturally.
+- Never say what level you are testing, never give a score, never praise or correct mid-interview. Marking is invisible to them until the end. Just react briefly and naturally, then ask the next thing.
+- Never answer your own question or model the reply you want.
+
+MARKING THE PREVIOUS ANSWER
+- comprehension 0-3: did they understand what was asked? 0 no reply or clearly did not understand, 1 caught the topic only, 2 understood with effort or one misreading, 3 understood fully.
+- production 0-3: was the Chinese they wrote accurate and natural for the TARGET LEVEL? 0 no usable Chinese (blank, English only, "I don't know"), 1 isolated words or heavy errors, 2 gets the meaning across with errors below this level's standard, 3 accurate and natural at this level.
+- Mark against the target level, not against a native speaker. A perfectly good HSK 2 answer to an HSK 5 task is a low production mark at 5 — that is the measurement working, not harshness.
+- Answering in English, in pinyin, or with "I don't know" is real evidence: mark production 0 and say so in the comment. Do not award marks for effort.
+- errors: up to three concrete ones. Quote the learner's own words in "span", give the corrected Chinese in "correction", and say what the rule is in one short English clause. Only real errors — do not invent them to look thorough, and do not list stylistic preferences as errors.
+- comment: one short English sentence the learner will read afterwards. Specific, not "good job".
+
+THE FINAL TURN
+When told this is the final turn, add a "result" object summarizing the whole interview: what they can reliably do, where it came apart, and what to work on. Base it on the transcript in front of you. Do not state an overall HSK level number in any text — the client computes that from your marks, and a second number that disagrees with it is worse than no number.
+
+Respond with ONLY a JSON object (no markdown fences):
+{
+  "level": 1-9, the level you picked for the task, from the allowed list
+  "reply": "what you say next, in Mandarin (plus a bracketed English gloss only at levels 1-2)",
+  "taskType": "question | situation | retell | translate | complete | wind-down",
+  "assess": null,
+  "result": null
+}
+"assess" is null on the opening turn only; on every other turn it is
+{ "comprehension": 0-3, "production": 0-3, "errors": [{ "span": "", "correction": "", "note": "" }], "vocabUsed": [""], "comment": "" }
+"result" is null except on the final turn, where it is
+{ "summary": "2-3 English sentences", "strengths": [""], "gaps": [""], "advice": [""] }`;
+
+const MAX_PLACEMENT_HISTORY = 26;      // messages of transcript sent back
+const MAX_PLACEMENT_MESSAGE = 1200;    // one turn of it
+const MAX_PLACEMENT_ANSWER = 2000;     // what the learner just typed
+const MAX_PLACEMENT_REPLY = 600;
+const MAX_PLACEMENT_ERRORS = 3;
+const MAX_PLACEMENT_RUBRIC_BYTES = 8 * 1024;
+
+// The rubrics, the deck, the transcript, and which levels this turn may be
+// aimed at. The rubrics travel from the client because the guides — the app's
+// copy of the published standard — live in the extension, and rating against
+// the same descriptors the learner can go and read is the whole point of
+// sending them.
+function buildPlacementPrompt(body, allowed) {
+  const parts = [];
+  const target = Number(body.target);
+  const rubrics = (Array.isArray(body.rubrics) ? body.rubrics : [])
+    .filter((r) => r && typeof r === 'object' && allowed.includes(Number(r.level)));
+
+  parts.push(allowed.length > 1
+    ? `Allowed levels for this turn: ${allowed.join(', ')}. Suggested: HSK ${target}.`
+    : `This turn must be aimed at HSK ${target}.`);
+
+  for (const rubric of rubrics) {
+    const lines = [];
+    if (Array.isArray(rubric.canDo)) {
+      lines.push(`At this level a learner can:\n- ${rubric.canDo.slice(0, 8).join('\n- ')}`);
+    }
+    if (Array.isArray(rubric.grammar)) {
+      lines.push(`Grammar introduced at this level:\n- ${rubric.grammar.slice(0, 14).join('\n- ')}`);
+    }
+    if (Array.isArray(rubric.vocab)) {
+      lines.push(`Representative vocabulary: ${rubric.vocab.slice(0, 60).join('、')}`);
+    }
+    parts.push(`RUBRIC FOR HSK ${Number(rubric.level)}\n${lines.join('\n\n')}`);
+  }
+
+  const profile = body.profile && typeof body.profile === 'object' ? body.profile : null;
+  if (profile) {
+    parts.push('The learner\'s flashcard deck, for pitching the task — not for marking:\n'
+      + `${JSON.stringify(profile)}`);
+  }
+
+  const history = (Array.isArray(body.history) ? body.history : [])
+    .slice(-MAX_PLACEMENT_HISTORY)
+    .filter((m) => m && typeof m.content === 'string'
+      && (m.role === 'examiner' || m.role === 'learner'))
+    .map((m) => `${m.role === 'learner' ? 'Learner' : 'You'}: ${m.content.slice(0, MAX_PLACEMENT_MESSAGE)}`);
+  if (history.length) parts.push(`The interview so far:\n${history.join('\n')}`);
+
+  const answer = askText(body.answer, MAX_PLACEMENT_ANSWER);
+  if (answer) {
+    parts.push(`THE LEARNER'S REPLY TO YOUR LAST TASK — mark this one:\n"""\n${answer}\n"""`);
+    parts.push(`Their reply was to a task aimed at HSK ${Number(body.answeredLevel) || target}. Mark it against THAT level.`);
+  } else if (history.length) {
+    // A turn arriving with an empty answer is a learner who pressed send with
+    // nothing in the box, or skipped. That is a mark of zero, not a missing
+    // measurement — saying so here stops the model marking the void generously.
+    parts.push('The learner sent no reply to your last task. Mark comprehension 0 and production 0.');
+  }
+
+  if (body.finish) {
+    parts.push('THIS IS THE FINAL TURN. Mark the reply above, then close the interview warmly in '
+      + 'one or two sentences and fill in "result". Do not set another task.');
+  } else if (!history.length) {
+    parts.push('This is the opening turn. There is nothing to mark yet, so "assess" is null. '
+      + 'Greet them in one short line and set the first task.');
+  }
+  return parts.join('\n\n');
+}
+
+const clampMark = (value) => Math.min(3, Math.max(0, Math.round(Number(value)) || 0));
+
+// The model is marking, so its numbers are taken as given — but the shapes are
+// not. A mark that arrives as "3/3", an errors array of 40 items, or a result
+// object on a turn that is not the last one would all end up stored in the
+// learner's history and charted, so each is coerced or dropped here.
+function cleanAssess(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const errors = (Array.isArray(raw.errors) ? raw.errors : [])
+    .slice(0, MAX_PLACEMENT_ERRORS)
+    .map((e) => ({
+      span: askText(e && e.span, 120),
+      correction: askText(e && e.correction, 200),
+      note: askText(e && e.note, 200),
+    }))
+    .filter((e) => e.span || e.correction);
+  return {
+    comprehension: clampMark(raw.comprehension),
+    production: clampMark(raw.production),
+    errors,
+    vocabUsed: (Array.isArray(raw.vocabUsed) ? raw.vocabUsed : [])
+      .slice(0, 12).map((w) => askText(w, 20)).filter(Boolean),
+    comment: askText(raw.comment, 300),
+  };
+}
+
+function cleanResult(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const list = (value) => (Array.isArray(value) ? value : [])
+    .slice(0, 5).map((s) => askText(s, 220)).filter(Boolean);
+  return {
+    summary: askText(raw.summary, 700),
+    strengths: list(raw.strengths),
+    gaps: list(raw.gaps),
+    advice: list(raw.advice),
+  };
+}
+
+// POST /api/placement -> { reply, taskType, assess, result }
+async function handlePlacement(request, env) {
+  const token = bearerToken(request);
+  if (!token) return json({ error: 'missing or malformed bearer token' }, 401);
+  const model = resolveModel(request, env, 'The placement interview');
+  if (model.error) return model.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'invalid JSON' }, 400);
+  }
+  const target = Number(body.target);
+  if (!Number.isInteger(target) || target < 1 || target > 9) {
+    return json({ error: 'target must be an HSK level, 1 to 9' }, 400);
+  }
+  // The band the client's ladder will accept back. The suggestion is always in
+  // it, so a client that sends no band still gets a working turn.
+  const allowed = [...new Set([target, ...(Array.isArray(body.allowed) ? body.allowed : [])]
+    .map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 9))].sort();
+  if (JSON.stringify(body.rubrics || null).length > MAX_PLACEMENT_RUBRIC_BYTES) {
+    return json({ error: 'rubrics too large' }, 413);
+  }
+  if (JSON.stringify(body.profile || null).length > MAX_PROFILE_BYTES) {
+    return json({ error: 'profile too large' }, 413);
+  }
+
+  const now = Date.now();
+  const db = env.DB;
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const user = await getUser(db, await sha256Hex(token), ip, now);
+  if (!user) return json({ error: 'too many new pairings from this address; try later' }, 429);
+
+  await ensureUsageLog(db);
+  if (await usageLastHour(db, user.id, 'placement', now) >= PLACEMENT_PER_HOUR) {
+    return json({
+      error: `placement limit reached (${PLACEMENT_PER_HOUR} questions per hour); try again later`,
+    }, 429);
+  }
+
+  let parsed;
+  try {
+    parsed = extractJson(await callModel(
+      model.env, PLACEMENT_SYSTEM, buildPlacementPrompt(body, allowed)));
+  } catch (err) {
+    console.log(JSON.stringify({ event: 'placement_error', error: String(err && err.message || err) }));
+    return json({
+      error: 'could not continue the interview right now; try again shortly',
+      detail: String(err && err.message || err).slice(0, 300),
+    }, 502);
+  }
+
+  const reply = askText(parsed.reply, MAX_PLACEMENT_REPLY);
+  if (!reply) return json({ error: 'the examiner returned nothing to say' }, 502);
+
+  await recordUsage(db, user.id, 'placement', now);
+  return json({
+    // A level outside the band is not a suggestion to weigh — the ladder
+    // already ruled it out — so it becomes the suggestion the client sent.
+    level: allowed.includes(Number(parsed.level)) ? Number(parsed.level) : target,
+    reply,
+    taskType: askText(parsed.taskType, 40),
+    // Nothing to mark on the opening turn, and a result only on the last one:
+    // whatever the model returned otherwise is dropped rather than charted.
+    assess: body.answer || (Array.isArray(body.history) && body.history.length)
+      ? cleanAssess(parsed.assess) : null,
+    result: body.finish ? cleanResult(parsed.result) : null,
+    generatedAt: now,
+  });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -1049,6 +1277,15 @@ export default {
         return await handleAsk(request, env);
       } catch (err) {
         console.log(JSON.stringify({ event: 'ask_error', error: String(err && err.stack || err) }));
+        return json({ error: 'internal error' }, 500);
+      }
+    }
+    if (pathname === '/api/placement') {
+      if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
+      try {
+        return await handlePlacement(request, env);
+      } catch (err) {
+        console.log(JSON.stringify({ event: 'placement_error', error: String(err && err.stack || err) }));
         return json({ error: 'internal error' }, 500);
       }
     }

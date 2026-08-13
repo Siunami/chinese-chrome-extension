@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Zhongwen Explorer — placement interview</title>
+  <link rel="stylesheet" href="shell.css">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; flex-direction: column; overflow: hidden;
+      background: var(--zx-surface); color: var(--zx-ink); font-size: 15px;
+      font-family: var(--zx-font);
+    }
+    main { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 20px 60px; }
+    /* One column, and a narrow one. The interview is a conversation and the
+       report is prose — both are read a line at a time, and neither gets
+       better for being stretched across a 1400px window. */
+    .col { max-width: 720px; margin: 0 auto; }
+
+    .page-head h2 { margin: 0; font-size: 25px; }
+    .page-head .sub { margin: 5px 0 18px; color: #666; font-size: 14.5px; }
+
+    .panel { padding: 18px 20px; border: 1px solid #e8e1d5; border-radius: 12px;
+      background: #fffdf7; }
+    .panel p { margin: 0 0 11px; color: #444; font-size: 14.5px; line-height: 1.6; }
+    .panel p.note { color: #8a8272; font-size: 13px; }
+
+    button {
+      font: inherit; font-size: 13.5px; padding: 7px 15px; border-radius: 8px;
+      border: 1px solid #d5cdbd; background: #fdfbf5; color: #444; cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #f5f0e4; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button.primary {
+      border-color: #c9b08a; background: #fdf6c7; color: #7f1920; font-weight: 650;
+    }
+    button.primary:hover:not(:disabled) { background: #fdf0a8; }
+    button.quit {
+      margin-top: 18px; border: 0; background: none; color: #a09888;
+      font-size: 12.5px; padding: 4px 0;
+    }
+    button.quit:hover { background: none; color: #b5232b; text-decoration: underline; }
+    .row { display: flex; align-items: center; gap: 9px; }
+    .row.actions { margin: 16px 0 22px; }
+    .row .hint { flex: 1; color: #b0a996; font-size: 11.5px; }
+
+    /* ---- interview ---- */
+    .progress { height: 4px; border-radius: 2px; background: #ece7db; overflow: hidden; }
+    .progress i { display: block; height: 100%; background: #b5232b;
+      border-radius: 2px; transition: width 0.25s ease; }
+    .progress-note { margin: 6px 0 20px; color: #9a9384; font-size: 11.5px;
+      font-variant-numeric: tabular-nums; }
+
+    .log { min-height: 140px; }
+    .msg { margin-bottom: 14px; }
+    .msg.learner { text-align: right; }
+    .msg .bubble { display: inline-block; max-width: 88%; text-align: left;
+      padding: 11px 14px; border-radius: 14px 14px 14px 4px;
+      border: 1px solid #e8e1d5; background: #fffdf7; }
+    .msg.learner .bubble { border-radius: 14px 14px 4px 14px;
+      border-color: #ded6c2; background: #ece4d0; font-size: 15px; line-height: 1.55; }
+    .msg .zh { font-size: 19px; line-height: 1.75;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .thinking { color: #999; font-size: 14px; font-style: italic; }
+
+    .composer { margin-top: 6px; padding: 8px 9px 9px; border: 1px solid #ddd5c4;
+      border-radius: 12px; background: #fff; }
+    .composer:focus-within { border-color: #c9b08a;
+      box-shadow: 0 0 0 3px rgba(201, 165, 92, 0.16); }
+    .composer textarea {
+      display: block; width: 100%; padding: 3px 4px; border: 0; background: none;
+      color: #222; font: inherit; font-size: 17px; line-height: 1.6; resize: none;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    .composer textarea:focus { outline: none; }
+    .composer textarea::placeholder { color: #c4bdaa; }
+    .composer .row { margin-top: 5px; }
+
+    .error { margin-top: 14px; padding: 12px 15px; border: 1px solid #e2b8b8;
+      border-radius: 10px; background: #fdf4f4; }
+    .error p { margin: 0 0 10px; color: #8f1c23; font-size: 13.5px; line-height: 1.55; }
+
+    /* ---- report ---- */
+    .headline { padding: 16px 19px; border: 1px solid #e8e1d5; border-radius: 12px;
+      background: #fffdf7; }
+    .headline .level { display: flex; align-items: baseline; gap: 11px; }
+    .headline .level b { color: #b5232b; font-size: 32px; letter-spacing: -0.02em; }
+    .headline .level span { color: #8a7a58; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase; }
+    .headline .confidence { margin: 8px 0 0; color: #444; font-size: 13.5px;
+      line-height: 1.55; }
+    .headline .meta { margin: 7px 0 0; color: #9a9384; font-size: 12px; }
+
+    section { margin-top: 26px; }
+    section > h3 {
+      margin: 0 0 8px; padding-bottom: 5px; border-bottom: 1px solid #eee7da;
+      color: #7f1920; font-size: 12px; font-weight: 750;
+      letter-spacing: 0.07em; text-transform: uppercase;
+    }
+    section > .sub { margin: -2px 0 12px; color: #8a8272; font-size: 12.5px; }
+    section p { margin: 0 0 10px; color: #444; font-size: 14.5px; line-height: 1.6; }
+    .list-head { margin: 14px 0 4px; color: #555; font-size: 13px; font-weight: 700; }
+    ul.plain { margin: 0; padding-left: 19px; }
+    ul.plain li { margin: 4px 0; color: #444; font-size: 14px; line-height: 1.55; }
+
+    /* A correction: what you wrote, struck; what it should be, saveable. */
+    .fix { margin: 0 0 9px; padding: 10px 13px; border-left: 3px solid #c9a55c;
+      border-radius: 0 9px 9px 0; background: #fffdf7; }
+    .fix .was { color: #a0968a; font-size: 15px; text-decoration: line-through;
+      text-decoration-color: #d9b0b0;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .fix .zh { margin-top: 2px; font-size: 18px; line-height: 1.55;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .fix .why { margin-top: 3px; color: #666; font-size: 13px; line-height: 1.5; }
+    .fix .from { margin-top: 4px; color: #b0a996; font-size: 10.5px;
+      font-weight: 700; letter-spacing: 0.05em; }
+
+    .transcript { margin-top: 26px; }
+    .transcript > summary { cursor: pointer; color: #8a8272; font-size: 12.5px; }
+    .turn { margin-top: 14px; padding-left: 12px; border-left: 2px solid #ece5d7; }
+    .turn-level { color: #b0a996; font-size: 10.5px; font-weight: 700;
+      letter-spacing: 0.05em; }
+    .turn .zh { font-size: 17px; line-height: 1.6;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .turn .said { margin-top: 3px; color: #555; font-size: 15px; line-height: 1.55;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .turn .mark { margin-top: 4px; color: #8a8272; font-size: 11.5px;
+      font-variant-numeric: tabular-nums; }
+    .turn .why { margin-top: 2px; color: #666; font-size: 13px; line-height: 1.5; }
+
+    table.hist { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.hist td { padding: 5px 10px 5px 0; border-bottom: 1px solid #eee7da;
+      color: #555; }
+    table.hist td.lv { color: #222; font-weight: 650; }
+
+    .speak { display: inline-grid; place-items: center; vertical-align: middle;
+      width: 25px; height: 25px; padding: 0; margin-left: 6px;
+      border-radius: 50%; font-size: 12px; line-height: 1; }
+
+    @media (max-width: 620px) {
+      main { padding: 14px 12px 40px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="col" id="view"></div>
+  </main>
+
+  <!-- The universal popup is a classic script (shared verbatim with the
+       content script), so it must load before the page module. -->
+  <script src="lib/popup.js"></script>
+  <script src="lib/savecard.js"></script>
+  <script type="module" src="placement.js"></script>
+</body>
+</html>

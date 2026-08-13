@@ -11,6 +11,7 @@ const frames = {
   review: document.getElementById('reviewFrame'),
   library: document.getElementById('libraryFrame'),
   guides: document.getElementById('guidesFrame'),
+  placement: document.getElementById('placementFrame'),
   news: document.getElementById('newsFrame'),
 };
 

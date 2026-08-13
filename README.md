@@ -53,6 +53,11 @@ headless Chrome, so they cannot quietly stop being true.)*
   directly clickable. Sticky back/forward controls (or arrow keys) retrace a
   flat, browser-style history, and a new choice after going back replaces the
   old forward path.
+- **Placement interview** — a dozen turns of Mandarin back-and-forth that end
+  in an HSK level, a chart of which levels held and which came apart, and every
+  correction the examiner wrote down, each saveable as a flashcard. The
+  questions lean on words your deck says you already know. See [Placement
+  interview](#placement-interview).
 - **Example sentences** — up to 15 Tatoeba sentences per word (default 8),
   shortest first, with auto-generated pinyin and English translation.
   Hovering 是 won't show sentences that only contain 是否.
@@ -250,11 +255,11 @@ dictionary cannot translate are written by a language model. They run on
 2. Open the extension's **Options** page — the puzzle-piece menu in Chrome's
    toolbar → Zhongwen Explorer → ⋮ → Options — and paste the key under
    **AI features**.
-3. That's it. Open a new tab and try **News → Generate**, or open the HSK
-   guides and ask the tutor a question.
+3. That's it. Open a new tab and try **News → Generate**, sit the **Level**
+   placement interview, or open the HSK guides and ask the tutor a question.
 
 **Where the key goes.** It is stored in your browser's local extension storage
-and sent — only on those three kinds of request — to the sync Worker, which
+and sent — only on those model-backed requests — to the sync Worker, which
 forwards it to OpenAI and never writes it to a database or a log. If you would
 rather not route a key through a Worker somebody else operates, [run your own
 Worker](#phone-sync-flashcards-on-your-phone) (it's ~20 lines of `wrangler` and
@@ -351,7 +356,14 @@ as an image — with the type, size and count caps refusing a bad one without
 spending one of the learner's forty questions. `tests/translate.test.mjs` and `tests/translate-sweep.test.mjs` cover the two
 halves of card translation — the endpoint's guards, budget and clamping, and
 the client's decisions about what to send, what to retry, and what to leave
-alone when a request fails. `tests/provider-key.test.mjs` covers the thing that
+alone when a request fails. `tests/placement.test.mjs` covers the placement
+interview from both ends — the ladder driven through the sequences of marks a
+real run produces (every shape of learner terminates, inside the turn cap; a
+level held above one that came apart is read as a gap rather than a placement;
+an unmarked turn is not scored as a zero), and the endpoint's guards, its
+separate hourly budget, and the two things the Worker must not let the model
+do: pick a level the ladder ruled out, and close an interview that has just
+started. `tests/provider-key.test.mjs` covers the thing that
 makes a shared deployment safe to hand to other people: that a caller's key is
 what reaches the provider, that it replaces the Worker's own credentials rather
 than merging with them, and that with `REQUIRE_USER_KEY` set a keyless request
@@ -373,6 +385,10 @@ dictionary in Node. It then drives headless Chrome to check
 that every page boots clean, that the guides render with generated readings,
 that a review card stays silent on the question and gives the full popup on the
 answer, that every dashboard tab keeps the top bar and draws no second header,
+that a whole placement interview runs from the invitation to the report and
+lands on the level the scripted examiner was playing — with the ladder, the
+transport and the chart all having to agree for it to pass, and a correction
+from the report saving as a real card,
 and that a trusted pointer move over 喜欢 on an ordinary web page resolves the
 containing word. Saving is driven the same way: a star in a guide saves the
 sentence beside it, a real drag over a phrase on a web page raises the bar and
@@ -540,6 +556,73 @@ a bar appears offering
 **Ask about this** (beside **☆ Save**); clicking it points the question at that
 exact text. See [Asking questions](#asking-questions) for how it works
 everywhere else.
+
+## Placement interview
+
+The **Level** tab (`placement.html`) works out where you are on the HSK scale
+by talking to you, and then keeps the answer.
+
+It is an interview, not a quiz. Roughly a dozen turns: the examiner writes a
+task in Mandarin, you type back, and it marks what you wrote before setting the
+next one. The tasks vary — answer a question about your life, react to a
+situation, retell what was just said, translate one short sentence, finish a
+sentence that was started. Nothing is corrected while you are in it; every
+correction waits until the end.
+
+**How the number is arrived at.** The shape is the one oral proficiency
+interviews use: open somewhere comfortable, push upward until the tasks stop
+being answerable, then come back and confirm the highest level actually
+sustained. Each answer is marked out of three for understanding the task and
+out of three for the Chinese that came back; a level counts as *held* at about
+two thirds of the available marks and *lost* below about a third. Your
+placement is the top of the range you held **before the first level that came
+apart** — HSK is cumulative, so sustaining 5 after losing 3 is a gap, not a
+level 5. Confidence is reported alongside it, and is only ever high when the
+run found both a level you held and a level you did not, with more than one
+task at each.
+
+**The model examines; it does not decide.** The ladder — which level to probe,
+when there is enough evidence, what the marks add up to — is
+`extension/lib/placement.js`, a few hundred lines of arithmetic with no model
+in them, driven directly by `tests/placement.test.mjs`. A model asked to also
+judge when it has heard enough will keep a pleasant conversation going
+indefinitely, and an interview whose length depends on the model's mood cannot
+be costed, tested, or compared with the one you sat last month. What the model
+is given is the one judgement it is genuinely better at: having just marked an
+answer, it picks the next level from a narrow band the rules have already
+sanctioned.
+
+**It marks against the published standard, not its own idea of HSK 4.** Each
+turn carries the [study guide](#hsk-study-guides) for the levels in play — the
+can-do statements, the grammar points, representative vocabulary — so the
+examiner is rating against the same descriptors you can go and read, rather
+than against a recollection that drifts between sessions.
+
+**Your deck is part of it.** The same profile the [news
+digest](#ai-news-digest) uses travels with each turn: words you reliably know,
+words you are studying this week, words you keep failing. Tasks lean on the
+first group, so a stumble is about the level rather than about one unlucky
+word, and work in the last group where they fit. It is used for pitching the
+questions, never for marking the answers.
+
+**What you get back.** A level and how much to trust it; a nine-row ladder
+showing every level, including the ones never asked about, so a run over four
+rungs cannot read as a complete picture of nine; per-turn marks and the whole
+transcript, replayable with the usual hover-for-definition; and a list of every
+correction the examiner wrote, each with its own ☆. That last part is the
+point — a test that ends in a number tells you where you are, and a test that
+ends in fifteen saveable corrections tells you what to do about it. **Study HSK
+n** points the guides at the first level you have not yet held.
+
+Stopping early is not failing: the marks so far are real, and a run abandoned
+at question eight still reports, at lower confidence. Results are kept locally
+(the last 20), and previous placements are listed under the current one.
+
+It runs on your own Worker at `POST /api/placement`, on the same private
+pairing token and model provider as the tutor and the news digest, capped at 60
+turns per hour per user — about two full interviews. One interview is one model
+call per turn, and opening the tab costs nothing; the model is only called once
+you start a run.
 
 ## Saving from anywhere
 
@@ -715,7 +798,12 @@ extension/          the unpacked extension (load this folder in Chrome)
                     fuzz, session planning, the anti-priming queue, and the
                     forecast/stage maths (pure functions; tested)
   lib/progress.js   the shared progress visuals built on it — due-per-day
-                    forecast, stage distribution, per-card strength meter
+                    forecast, stage distribution, per-card strength meter, and
+                    the placement interview's level ladder
+  lib/placement.js  the placement interview's rules: which level to probe next,
+                    when there is enough evidence to stop, and what the marks
+                    add up to (pure functions; tested)
+  placement.html/js the interview itself, and the report it leaves behind
   lib/merge.js      per-card sync merge rules (shared with worker + pwa)
   lib/sync.js       sync client: push/pull against the worker
   lib/qr.js         vendored qrcode-generator (MIT) for the pairing QR
@@ -742,7 +830,7 @@ extension/          the unpacked extension (load this folder in Chrome)
   review.html/js    spaced-repetition flashcard review + end-of-session panel
   lib/pronounce.js  pinyin-based grading for the review card check (pure; tested)
 worker/             Cloudflare Worker: /api/sync, /api/news, /api/ask,
-                    /api/translate + serves the PWA (D1-backed)
+                    /api/placement, /api/translate + serves the PWA (D1-backed)
 pwa/                the phone app: review, word list, tap-to-define sheet,
                     pairing (lib/ and data/ are copied from extension/ by
                     scripts/sync-shared.mjs — edit there; data/ is gitignored)
