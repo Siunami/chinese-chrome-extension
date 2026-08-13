@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Zhongwen Explorer — HSK study guides</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    /* An author `display` rule outranks the UA's [hidden] rule, which would
+       leave .quote-chip (display: flex) permanently on screen. */
+    [hidden] { display: none !important; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; flex-direction: column; overflow: hidden;
+      background: #fff; color: #222; font-size: 15px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    h1 { font-size: 20px; margin: 0 0 2px; }
+    .topbar { flex: none; padding: 18px 24px 0; }
+    .nav { display: flex; gap: 14px; align-items: center; margin: 4px 0 12px; }
+    .nav a { color: #b5232b; font-weight: 600; font-size: 14px; text-decoration: none; }
+    .nav a:hover { text-decoration: underline; }
+    body.embedded .topbar { display: none; }
+
+    .layout { flex: 1; min-height: 0; display: flex; }
+
+    /* ---- level rail ---- */
+    .rail {
+      flex: none; width: 132px; overflow-y: auto; padding: 14px 10px 20px;
+      border-right: 1px solid #e6e0d2; background: #faf8f2;
+    }
+    .band { margin-bottom: 14px; }
+    .band-name {
+      margin: 0 0 5px 6px; color: #a09070; font-size: 9.5px; font-weight: 750;
+      letter-spacing: 0.09em; text-transform: uppercase;
+    }
+    .lvl {
+      display: block; width: 100%; margin-bottom: 3px; padding: 7px 10px;
+      border: 1px solid transparent; border-radius: 8px; background: transparent;
+      color: #444; font: inherit; font-size: 13px; font-weight: 600;
+      text-align: left; cursor: pointer;
+    }
+    .lvl:hover { background: #f1ece0; }
+    .lvl.active { border-color: #d8cab5; background: #fdf6c7; color: #7f1920; }
+    .lvl small { display: block; color: #999; font-size: 10px; font-weight: 500; }
+    .lvl.active small { color: #a4746f; }
+    .band-note { margin: 2px 6px 0; color: #aaa; font-size: 10px; line-height: 1.35; }
+
+    /* ---- guide body ---- */
+    .guide { flex: 1; min-width: 0; overflow-y: auto; padding: 22px 30px 60px; }
+    .guide-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    .guide-head h2 { margin: 0; font-size: 27px; }
+    .badge {
+      padding: 2px 9px; border-radius: 10px; background: #f1ead9;
+      color: #8a7a58; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.05em; text-transform: uppercase;
+    }
+    .tagline { margin: 5px 0 16px; color: #666; font-size: 15px; }
+    .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+    .stat {
+      min-width: 96px; padding: 8px 12px; border: 1px solid #e8e1d5;
+      border-radius: 9px; background: #fffdf7;
+    }
+    .stat b { display: block; color: #b5232b; font-size: 17px; }
+    .stat span { color: #999; font-size: 10px; font-weight: 650;
+      letter-spacing: 0.04em; text-transform: uppercase; }
+
+    section { margin-top: 26px; }
+    section > h3 {
+      margin: 0 0 9px; padding-bottom: 5px; border-bottom: 1px solid #eee7da;
+      color: #7f1920; font-size: 12px; font-weight: 750;
+      letter-spacing: 0.07em; text-transform: uppercase;
+    }
+    .overview { margin: 0; color: #333; line-height: 1.6; }
+    ul.plain { margin: 0; padding-left: 19px; }
+    ul.plain li { margin: 4px 0; line-height: 1.5; }
+
+    .point { margin: 0 0 14px; padding: 11px 14px; border: 1px solid #ece5d7;
+      border-radius: 10px; background: #fffdf7; }
+    .point-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .point-name { font-size: 15px; font-weight: 700; }
+    .formula {
+      padding: 2px 8px; border-radius: 6px; background: #f3ecdb;
+      color: #6d5c34; font-size: 13px;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    .explain { margin: 6px 0 8px; color: #444; font-size: 14px; line-height: 1.55; }
+    .eg { margin: 7px 0 0; padding-left: 11px; border-left: 2px solid #e5dcc8; }
+    .eg .zh { font-size: 17px; line-height: 1.5;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .eg .py { color: #9a8f78; font-size: 12px; }
+    .eg .en { color: #666; font-size: 13px; }
+
+    .theme-name { margin: 14px 0 6px; color: #555; font-size: 13px; font-weight: 700; }
+    .words { display: flex; flex-wrap: wrap; gap: 7px; }
+    .word {
+      min-width: 104px; padding: 6px 10px; border: 1px solid #ece5d7;
+      border-radius: 9px; background: #fffdf7;
+    }
+    .word .zh { font-size: 18px;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .word .py { color: #9a8f78; font-size: 11.5px; }
+    .word .en { color: #666; font-size: 12px; }
+
+    .passage { padding: 16px 18px; border: 1px solid #e8e1d5; border-radius: 11px;
+      background: #fffdf7; }
+    .passage-title { font-size: 21px; font-weight: 700;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .passage-title-py { margin-top: 1px; color: #9a8f78; font-size: 12px; }
+    .passage p { margin: 12px 0 0; font-size: 18px; line-height: 1.95;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .passage .py { margin: 1px 0 0; color: #9a8f78; font-size: 12.5px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif; line-height: 1.5; }
+    .passage .translation { margin-top: 14px; padding-top: 12px;
+      border-top: 1px dashed #e6ddc9; color: #555; font-size: 14px; line-height: 1.6; }
+    /* One reading-passage sentence, with its own save control. */
+    .passage .sent { border-radius: 5px; }
+    .passage .sent:hover { background: rgba(201, 165, 92, 0.11); }
+    .toggles { display: flex; gap: 8px; margin: 10px 0 0; }
+
+    .pitfall { margin: 0 0 10px; padding: 9px 13px; border-left: 3px solid #dfa9ac;
+      border-radius: 0 8px 8px 0; background: #fdf4f4; }
+    .pitfall b { font-size: 14px; }
+    .pitfall p { margin: 3px 0 0; color: #555; font-size: 13.5px; line-height: 1.55; }
+
+    .exam { color: #444; font-size: 14px; line-height: 1.6; }
+    .exam p { margin: 0 0 7px; }
+
+    button {
+      font: inherit; font-size: 13px; padding: 6px 13px; border-radius: 8px;
+      border: 1px solid #d5cdbd; background: #fdfbf5; color: #444; cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #f5f0e4; }
+    button:disabled { opacity: 0.55; cursor: default; }
+    .speak { width: 25px; height: 25px; padding: 0; margin-left: 5px;
+      border-radius: 50%; font-size: 12px; line-height: 1; vertical-align: middle; }
+
+    /* The tutor panel is lib/tutor.js; this is just the column it sits in. */
+    .chat-slot { flex: none; width: 336px; min-height: 0; display: flex; }
+    .chat-slot > .tutor { flex: 1; min-width: 0; }
+
+    .empty { margin-top: 40px; color: #888; text-align: center; }
+    @media (max-width: 900px) {
+      .chat-slot { width: 280px; }
+      .rail { width: 108px; }
+      .guide { padding: 16px 18px 50px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>HSK study guides</h1>
+    <div class="nav">
+      <a href="review.html">Review</a>
+      <a href="wordlist.html">Saved library</a>
+      <a href="news.html">News</a>
+      <a href="practice.html">Pronunciation</a>
+      <a href="options.html">Options</a>
+    </div>
+  </div>
+  <div class="layout">
+    <nav class="rail" id="rail" aria-label="HSK levels"></nav>
+    <main class="guide" id="guide"></main>
+    <!-- lib/tutor.js mounts the panel here (docked); the same component opens
+         as a drawer on the review card and the news digest. -->
+    <div class="chat-slot" id="tutorSlot"></div>
+  </div>
+
+  <!-- The universal popup is a classic script (shared verbatim with the
+       content script), so it must load before the page module. -->
+  <script src="lib/popup.js"></script>
+  <script src="lib/savecard.js"></script>
+  <script type="module" src="hsk.js"></script>
+</body>
+</html>

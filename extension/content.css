@@ -1,0 +1,5 @@
+::highlight(zwe-word) {
+  background-color: rgba(31, 117, 255, 0.32);
+  text-decoration: underline 2px rgba(31, 117, 255, 0.85);
+  text-underline-offset: 3px;
+}

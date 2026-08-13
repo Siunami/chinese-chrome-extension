@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Zhongwen Explorer — Review</title>
+  <style>
+    :root { color-scheme: light; }
+    /* An author `display` rule outranks the UA's [hidden] rule, so anything
+       toggled with .hidden needs this or it never actually hides. */
+    [hidden] { display: none !important; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 640px; margin: 28px auto; padding: 0 16px; color: #222;
+      font-size: 15px;
+    }
+    h1 { font-size: 20px; margin-bottom: 2px; }
+    .nav { display: flex; gap: 14px; align-items: center; margin: 4px 0 10px; }
+    .nav a { color: #b5232b; font-weight: 600; text-decoration: none; }
+    .nav a:hover { text-decoration: underline; }
+    .stats { color: #777; font-size: 13px; margin-bottom: 18px; }
+    .stats b { color: #b5232b; }
+    .progress { height: 5px; border-radius: 3px; background: #eceae2;
+      overflow: hidden; margin-bottom: 6px; }
+    .progress i { display: block; height: 100%; border-radius: 3px;
+      background: #b5232b; transition: width 0.2s; }
+    .progress-line { font-variant-numeric: tabular-nums; }
+    .card {
+      border: 1px solid #ddd; border-radius: 12px; padding: 28px 24px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.07); text-align: center;
+      min-height: 300px; display: flex; flex-direction: column;
+      justify-content: center; gap: 10px;
+    }
+    .hanzi {
+      font-size: 54px; font-weight: 600; line-height: 1.25;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+        "Noto Sans CJK SC", sans-serif;
+    }
+    .hanzi.sentence { max-width: 560px; margin: 0 auto; font-size: 31px;
+      line-height: 1.45; }
+    .card-type { color: #999; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase; }
+    .trad { font-size: 26px; color: #888;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .pinyin { font-size: 24px; font-weight: 500; }
+    .answer-line { display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .speak { width: 32px; height: 32px; padding: 0; border-radius: 50%;
+      font-size: 15px; line-height: 1; }
+    .example .speak { width: 25px; height: 25px; margin-left: 5px; font-size: 12px; }
+    .defs { font-size: 16px; color: #333; max-width: 480px; margin: 0 auto; }
+    .example { margin-top: 14px; font-size: 15px; color: #444; }
+    .example .zh { font-size: 18px;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .example .zh .hl { color: #b5232b; font-weight: 700; }
+    .example .py { font-size: 12.5px; color: #999; }
+    .example .en { font-size: 13.5px; color: #666; }
+    .tone1 { color: #d02c1f; } .tone2 { color: #0f8b1f; }
+    .tone3 { color: #1b3ddb; } .tone4 { color: #8615bd; } .tone5 { color: #767676; }
+    .controls { margin-top: 18px; display: flex; gap: 10px; justify-content: center; }
+    button {
+      font-size: 14px; padding: 9px 18px; border-radius: 8px; cursor: pointer;
+      border: 1px solid #ccc; background: #fafafa;
+    }
+    button:hover { background: #f0f0f0; }
+    #reveal { font-weight: 600; padding: 10px 30px; }
+    .grade { min-width: 92px; display: flex; flex-direction: column; gap: 2px; }
+    .grade small { font-weight: 400; color: #888; font-size: 11px; }
+    .g-again { border-color: #d88; } .g-again:hover { background: #fdeaea; }
+    .g-hard { border-color: #d8b169; } .g-hard:hover { background: #fdf3e0; }
+    .g-good { border-color: #7fb98a; } .g-good:hover { background: #e9f6ec; }
+    .g-easy { border-color: #7fa3d8; } .g-easy:hover { background: #e8f0fb; }
+    .keyhint { text-align: center; color: #aaa; font-size: 12px; margin-top: 12px; }
+
+    /* End-of-session panel: what "done for today" actually means. */
+    .summary { border: 1px solid #e3ddd0; border-radius: 12px; padding: 20px 22px;
+      background: #fffdf7; }
+    .summary-head { font-size: 19px; font-weight: 700; color: #0a7a2f; }
+    .summary-sub { margin: 6px 0 0; color: #555; font-size: 13.5px; line-height: 1.55; }
+    .tiles { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 4px; }
+    .tile { flex: 1 1 88px; border: 1px solid #eae4d6; border-radius: 9px;
+      padding: 9px 11px; background: #fff; }
+    .tile-n { font-size: 21px; font-weight: 700; color: #222;
+      font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .tile-l { font-size: 11px; color: #888; margin-top: 2px; }
+    .held { margin-top: 16px; border-top: 1px solid #eee7d9; padding-top: 12px; }
+    .held-row { margin: 0 0 10px; font-size: 13px; color: #555; line-height: 1.6; }
+    .held-row:last-child { margin-bottom: 0; }
+    .held-row b { color: #222; }
+    .more-btn { margin-left: 8px; padding: 4px 11px; font-size: 12px;
+      border-radius: 7px; border: 1px solid #d8cab5; background: #fdf6c7;
+      color: #7f1920; font-weight: 650; white-space: nowrap; }
+    .more-btn:hover { background: #fbefa8; }
+    .next-up { margin: 14px 0 20px; font-size: 13px; color: #555; line-height: 1.6; }
+    .next-up b { color: #222; }
+    .summary .viz { margin-top: 20px; }
+    .summary-foot { margin: 20px 0 0; font-size: 12.5px; }
+    .summary-foot a { color: #b5232b; font-weight: 600; text-decoration: none; }
+    .summary-foot a:hover { text-decoration: underline; }
+    .pron { margin-top: 18px; padding-top: 14px; border-top: 1px dashed #e2e2e2; }
+    .pron-bar { display: flex; align-items: center; justify-content: center;
+      flex-wrap: wrap; gap: 6px 10px; }
+    .pron-btn { font-size: 13px; padding: 7px 14px; border-radius: 8px;
+      border: 1px solid #c9b8d6; background: #faf7fc; }
+    .pron-btn:hover:not(:disabled) { background: #f2ecf7; }
+    .pron-btn:disabled { opacity: 0.6; cursor: default; }
+    .pron-note { color: #aaa; font-size: 11px; }
+    .pron-status { min-height: 18px; margin-top: 10px; color: #777; font-size: 13px; }
+    .pron-hanzi { font-size: 34px; font-weight: 600; line-height: 1.35; margin-top: 6px;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+        "Noto Sans CJK SC", sans-serif; }
+    .pron-char { border-radius: 5px; padding: 0 2px; }
+    .pron-good { color: #0a7a2f; background: #e6f6ea; }
+    .pron-tone { color: #a65b00; background: #fbeed6; }
+    .pron-miss { color: #c02626; background: #fbe4e4; }
+    .pron-summary { margin-top: 8px; font-size: 13px; color: #555; font-weight: 600; }
+    .pron-heard { margin-top: 3px; font-size: 12.5px; color: #999; }
+    body.embedded { margin-top: 18px; margin-bottom: 40px; }
+    body.embedded > h1, body.embedded > .nav { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Review</h1>
+  <div class="nav">
+    <a href="wordlist.html">Saved library</a>
+    <a href="hsk.html">HSK guides</a>
+    <a href="news.html">News</a>
+    <a href="practice.html">Pronunciation</a>
+    <a href="options.html">Options</a>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div id="app"></div>
+  <div class="keyhint" id="keyhint" hidden>
+    space / enter — show answer &nbsp;·&nbsp; hover hanzi — define &nbsp;·&nbsp; p pronounce &nbsp;·&nbsp; 1 again · 2 hard · 3 good · 4 easy
+  </div>
+  <!-- The universal popup is a classic script (shared verbatim with the
+       content script), so it must load before the page module. -->
+  <script src="lib/popup.js"></script>
+  <script src="lib/savecard.js"></script>
+  <script type="module" src="review.js"></script>
+</body>
+</html>

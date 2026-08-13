@@ -1,0 +1,6 @@
+rawdata/
+.DS_Store
+.wrangler/
+.dev.vars
+node_modules/
+pwa/data/

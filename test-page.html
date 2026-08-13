@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>Zhongwen Explorer — test page</title>
+  <style>
+    body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+           max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 2; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 16px; margin-top: 28px; color: #666; }
+    .trad { color: #333; }
+    .mixed b { color: #b5232b; }
+    .small { font-size: 12px; }
+    .big { font-size: 28px; }
+    .dark { background: #222; color: #eee; padding: 12px 16px; border-radius: 8px; }
+    ruby rt { font-size: 10px; color: #999; }
+  </style>
+</head>
+<body>
+  <h1>Zhongwen Explorer 测试页 (hover the text)</h1>
+
+  <h2>Simplified, plain paragraph</h2>
+  <p>我停下了足迹。是否还是不太喜欢吃香菜？那双原来最喜欢的框位鞋带，现在却解不开。</p>
+  <p>他问我是否很忙。我不在乎是否下雪。你想喝点什么吗？</p>
+
+  <h2>Traditional</h2>
+  <p class="trad">是否還是不太喜歡吃香菜？我們明天去圖書館看書。這個電腦壞了。</p>
+
+  <h2>Mixed Chinese / English / numbers</h2>
+  <p class="mixed">The word <b>喜欢</b> means "to like". 我有3个苹果 and 2 oranges. 中文English混排test。</p>
+
+  <h2>Inline formatting across nodes</h2>
+  <p>这是<b>一个</b>测试：<i>喜</i><i>欢</i>的词被<span>分成</span>了好几个节点。</p>
+
+  <h2>Font sizes</h2>
+  <p class="small">小字：我们喜欢学习中文。</p>
+  <p class="big">大字：我们喜欢学习中文。</p>
+
+  <h2>Dark background</h2>
+  <p class="dark">深色背景：今天天气很好，我们一起去公园吧。</p>
+
+  <h2>Ruby annotation (rt should be ignored)</h2>
+  <p><ruby>喜欢<rt>xǐhuān</rt></ruby>看<ruby>电影<rt>diànyǐng</rt></ruby>。</p>
+
+  <h2>Particles & polyphones</h2>
+  <p>他慢慢地走了。我的书在桌子上。他跑得很快。你吃着饭呢。</p>
+
+  <h2>Long words & chengyu</h2>
+  <p>中华人民共和国成立了。一石二鸟。百闻不如一见。</p>
+
+  <h2>Edge: astral-plane character</h2>
+  <p>这个字很少见：𠮷。前后正常文字继续。</p>
+</body>
+</html>
