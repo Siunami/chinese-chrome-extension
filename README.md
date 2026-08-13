@@ -23,7 +23,7 @@ does well that popup dictionaries usually don't: **real example sentences**
   edge, which looked exactly like hovering doing nothing.
 - **One popup, everywhere** — the same panel, with all of the above, opens on
   every surface the extension has: web pages, the study guides, the news
-  digest, the saved library, the pronunciation drill, and the *answer* side of
+  digest, the saved library, and the *answer* side of
   a review card. Its one implementation lives in `extension/lib/popup.js`;
   pages differ only in how they find the character under the cursor. On a
   review card the question side stays silent on purpose — looking up the word
@@ -86,19 +86,14 @@ does well that popup dictionaries usually don't: **real example sentences**
   (default 15 and 60); the limits are per *day*, so reloading the page no
   longer hands you another batch, and the Review tab's badge now counts what a
   session would actually serve.
-- **Pronunciation practice** — a dedicated page (`practice.html`, linked from
-  Review, the library, the New Tab dashboard, and Options) for drilling how you
-  say your saved cards, on a **separate axis from spaced repetition**: record a
-  card as often as you like, shuffle, filter to words or sentences, hide the
-  pinyin to self-test, and listen to the native audio — none of it ever touches
-  your review schedule. The mic is captured in the browser with a **live level
-  meter** (so you can see it working), then scored by **Azure AI Speech
-  Pronunciation Assessment** — the purpose-built engine that rates each word's
-  accuracy (including Mandarin tone), fluency, and completeness. Every character
-  is marked green (good), amber (needs work), or red (poor / missed) with its
-  0–100 score, alongside an overall score and a running session average. Runs
-  through your own sync Worker (which holds the key); see
-  [Pronunciation scoring](#pronunciation-scoring) for setup.
+- **Pronunciation check on a review card** — hit **🎙 Check pronunciation** on
+  any card and say it aloud. Grading is by *pinyin*, not hanzi, because Chinese
+  is full of homophones: a recognizer that transcribes 事 when you correctly
+  said 是 (both shì) still counts as right, and tone is graded separately so a
+  right sound with the wrong tone reads differently from a plain miss
+  (`extension/lib/pronounce.js`, pure and unit-tested). It is **practice only**
+  and never touches your review schedule. Runs entirely in Chrome's built-in
+  speech recognition — no server, no API key, no cost.
 - **Save anything you can point at** — a card does not have to be a word the
   popup looked up. Highlight any Chinese on any page — a phrase in an article,
   a clause you half-understood, one sentence of a study guide — and a small bar
@@ -141,7 +136,7 @@ does well that popup dictionaries usually don't: **real example sentences**
   how many times you have forgotten it. See [Asking questions](#asking-questions).
 - **New-tab learning dashboard** — Chrome's New Tab page opens directly to
   spaced-repetition review. Every view is a tab of the same app — Review,
-  Library, Guides, News, Pronounce — so the header and the live due/saved
+  Library, Guides, News — so the header and the live due/saved
   counts stay put while you move between them, and each page suppresses its own
   standalone title when embedded rather than stacking a second header.
   Settings open in their own tab so the dashboard is never lost.
@@ -219,16 +214,13 @@ Nothing generates on a page load — only when you click.
 | Feature | Needs a key | Needs the Worker |
 | --- | --- | --- |
 | Hover popup, dictionary, example sentences, HSK guides | no | no |
-| Saving words, flashcards, SRS review, pronunciation drill UI | no | no |
+| Saving words, flashcards, SRS review, pronunciation check | no | no |
 | Phone sync (the PWA) | no | yes |
 | News digest, tutor, sentence translation | **yes, yours** | yes |
-| Pronunciation *scoring* | no | yes, with Azure Speech configured on it |
 
-Pronunciation scoring is the one AI feature you cannot bring a key for: Azure
-Speech needs a whole separate Azure resource rather than a single key, so it
-runs on whatever the Worker's operator configured, capped at 120 takes per hour
-per user. If the Worker you are pointed at has no Azure Speech key, the page
-says so and the rest of the drill still works.
+There is no paid speech service anywhere in this: the review card's
+pronunciation check uses Chrome's own `SpeechRecognition`, and reading words
+aloud uses `chrome.tts`. Both are free and run on your machine.
 
 ## Phone sync (flashcards on your phone)
 
@@ -297,10 +289,7 @@ every sentence of every bundled reading passage, every worked example and every
 vocabulary item really does resolve to one, so no ☆ in a guide is a promise the
 resolver cannot keep — and `tests/ask.test.mjs` drives the real Worker module
 to check the tutor's guards, its rate limit, and that a highlighted passage
-actually reaches the model prompt. `tests/pronounce-api.test.mjs` does the same
-for `/api/pronounce` with Azure stubbed: the guards, the exact request the
-Worker sends, and the reshaped per-word scores the practice page renders.
-`tests/translate.test.mjs` and `tests/translate-sweep.test.mjs` cover the two
+actually reaches the model prompt. `tests/translate.test.mjs` and `tests/translate-sweep.test.mjs` cover the two
 halves of card translation — the endpoint's guards, budget and clamping, and
 the client's decisions about what to send, what to retry, and what to leave
 alone when a request fails. `tests/provider-key.test.mjs` covers the thing that
@@ -583,40 +572,6 @@ hour per user. Conversations are kept in local storage (12 turns each, 30 most
 recent threads), and every page works fully without a Worker; only the tutor
 needs one.
 
-## Pronunciation scoring
-
-The **Pronunciation practice** page records you saying a card and scores it with
-[Azure AI Speech **Pronunciation Assessment**](https://learn.microsoft.com/azure/ai-services/speech-service/how-to-pronunciation-assessment) —
-the purpose-built engine that returns per-word accuracy (including Mandarin
-tone), fluency, and completeness. The mic is captured in the browser
-(getUserMedia, with a live level meter so you can see it working), encoded to
-16 kHz WAV, and sent to `POST /api/pronounce` on your Worker with the same
-private pairing token. The Worker holds the Azure key and forwards the audio;
-audio is used only for that one request and never stored.
-
-This is the one AI feature with no bring-your-own-key path — Azure Speech is a
-separate Azure resource, not a single API key — so it always runs on whatever
-the Worker's operator configured, capped at `PRONOUNCE_PER_HOUR` (120) takes
-per user per hour. On a Worker you don't operate, that means the scoring is
-somebody else's free-tier hours; if you want it uncapped and unshared, deploy
-your own with your own Speech resource.
-
-**Set up (once):** create a **Speech** resource in the Azure portal — the free
-**F0** tier includes 5 audio hours/month at no cost — then note its **region**
-(e.g. `eastus`) and a key:
-
-```sh
-cd worker
-npx wrangler secret put AZURE_SPEECH_KEY        # paste a key from the Azure Speech resource
-npx wrangler secret put AZURE_SPEECH_REGION     # e.g. eastus  (the resource's region, lowercase)
-npx wrangler deploy
-```
-
-Then open **Pronunciation** (linked from Review, the library, the New Tab
-dashboard, and Options) and press **Record**. Without the secrets the endpoint
-returns a clear 503 and the page tells you to finish setup; local dev: add
-`AZURE_SPEECH_KEY=…` and `AZURE_SPEECH_REGION=…` to `worker/.dev.vars`.
-
 ## Repo layout
 
 ```
@@ -660,11 +615,9 @@ extension/          the unpacked extension (load this folder in Chrome)
   wordlist.html/js  saved library: cards, dates, counts, each card's place on
                     the curve, stage filters + TSV export
   review.html/js    spaced-repetition flashcard review + end-of-session panel
-  practice.html/js  pronunciation practice (mic capture → Azure scoring; not SRS)
-  lib/wav.js        mic resample + 16-bit PCM WAV encoding (pure; tested)
   lib/pronounce.js  pinyin-based grading for the review card check (pure; tested)
 worker/             Cloudflare Worker: /api/sync, /api/news, /api/ask,
-                    /api/pronounce + serves the PWA (D1-backed)
+                    /api/translate + serves the PWA (D1-backed)
 pwa/                the phone app: review, word list, tap-to-define sheet,
                     pairing (lib/ and data/ are copied from extension/ by
                     scripts/sync-shared.mjs — edit there; data/ is gitignored)

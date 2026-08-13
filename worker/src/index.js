@@ -40,23 +40,11 @@ const MAX_QUERIES = 5;
 const MAX_NEWS_ITEMS = 24;
 const NEWS_PER_QUERY = 6;
 
-// /api/pronounce: proxy short audio to Azure AI Speech Pronunciation
-// Assessment (purpose-built, scores each Mandarin syllable including tone).
-const MAX_AUDIO_BYTES = 4 * 1024 * 1024; // a few seconds of 16 kHz mono PCM
-const PRONOUNCE_LANG = 'zh-CN';
-
 // /api/ask: the tutor beside the HSK study guides. One short question at a
 // time about the guide the learner is reading, optionally pointing at a
 // passage they highlighted. Cheap per call, but a chat invites many calls, so
 // it is capped per user per hour.
 const ASK_PER_HOUR = 40;
-
-// /api/pronounce: unlike the model endpoints, Azure Speech has no
-// bring-your-own-key path (it needs a whole separate Azure resource, not one
-// API key), so it always runs on the Worker owner's key. On a shared
-// deployment that is the owner's bill, hence a per-user hourly cap — a drill
-// session is a few dozen takes, a runaway page is thousands.
-const PRONOUNCE_PER_HOUR = 120;
 
 // /api/translate: an English back for a card whose Chinese is not in the
 // dictionary or the example corpus — a sentence highlighted in an article, or
@@ -941,147 +929,6 @@ async function handleTranslate(request, env) {
   return json({ translation, literal: clean(parsed.literal), generatedAt: now });
 }
 
-// Azure wants the assessment config as base64 in a header, and the reference
-// text is Chinese — so it has to be base64 of the *UTF-8 bytes*, not of the
-// UTF-16 code units btoa() would otherwise choke on.
-function base64Utf8(text) {
-  const bytes = new TextEncoder().encode(text);
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary);
-}
-
-// Azure grades every word 0-100 and flags omissions/insertions separately.
-// Collapse both into the three buckets the practice page colors with.
-function wordStatus(assessment) {
-  const error = String(assessment.ErrorType || 'None');
-  if (error === 'Omission' || error === 'Insertion') return 'miss';
-  const accuracy = Number(assessment.AccuracyScore);
-  if (!Number.isFinite(accuracy)) return 'miss';
-  if (accuracy >= 80) return 'good';
-  if (accuracy >= 60) return 'warn';
-  return 'miss';
-}
-
-function roundScore(value) {
-  return Number.isFinite(Number(value)) ? Math.round(Number(value)) : null;
-}
-
-// POST /api/pronounce?text=<hanzi>, body = 16 kHz mono WAV. Forwards to Azure
-// AI Speech Pronunciation Assessment with the Worker's key and reshapes the
-// response into the small shape practice.js renders. Audio is passed straight
-// through and never stored.
-async function handlePronounce(request, env) {
-  const token = bearerToken(request);
-  if (!token) return json({ error: 'missing or malformed bearer token' }, 401);
-  if (!env.AZURE_SPEECH_KEY || !env.AZURE_SPEECH_REGION) {
-    return json({ error: 'pronunciation scoring is not configured on this server (set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION - see README)' }, 503);
-  }
-
-  const refText = (new URL(request.url).searchParams.get('text') || '').trim();
-  if (!refText) return json({ error: 'missing text' }, 400);
-  if (refText.length > 300) return json({ error: 'text too long' }, 400);
-
-  const audio = await request.arrayBuffer();
-  if (!audio.byteLength) return json({ error: 'missing audio' }, 400);
-  if (audio.byteLength > MAX_AUDIO_BYTES) return json({ error: 'audio too large' }, 413);
-
-  const now = Date.now();
-  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
-  const user = await getUser(env.DB, await sha256Hex(token), ip, now);
-  if (!user) return json({ error: 'too many new pairings from this address; try later' }, 429);
-
-  await ensureUsageLog(env.DB);
-  if (await usageLastHour(env.DB, user.id, 'pronounce', now) >= PRONOUNCE_PER_HOUR) {
-    return json({ error: `pronunciation limit reached (${PRONOUNCE_PER_HOUR} per hour); try again later` }, 429);
-  }
-
-  const config = base64Utf8(JSON.stringify({
-    ReferenceText: refText,
-    GradingSystem: 'HundredMark',
-    Granularity: 'Word',
-    // Miscue detection is what turns a skipped character into an explicit
-    // Omission instead of silently shortening the word list.
-    EnableMiscue: true,
-  }));
-  const region = String(env.AZURE_SPEECH_REGION).trim().toLowerCase();
-  const url = `https://${region}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1`
-    + `?language=${PRONOUNCE_LANG}&format=detailed`;
-
-  let res;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Ocp-Apim-Subscription-Key': env.AZURE_SPEECH_KEY,
-        'Content-Type': 'audio/wav; codecs=audio/pcm; samplerate=16000',
-        'Pronunciation-Assessment': config,
-        Accept: 'application/json',
-      },
-      body: audio,
-    });
-  } catch (err) {
-    console.log(JSON.stringify({ event: 'pronounce_fetch_error', error: String(err && err.message || err) }));
-    return json({ error: 'could not reach the speech service; try again shortly' }, 502);
-  }
-
-  const raw = await res.text();
-  if (!res.ok) {
-    console.log(JSON.stringify({ event: 'pronounce_upstream', status: res.status, body: raw.slice(0, 300) }));
-    // 401/403 means the key or region is wrong — that is setup, not a transient
-    // failure, so say so rather than telling the learner to try again.
-    if (res.status === 401 || res.status === 403) {
-      return json({ error: 'the speech key or region on this server was rejected by Azure' }, 502);
-    }
-    return json({ error: `speech service error (${res.status})` }, 502);
-  }
-
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    return json({ error: 'unreadable response from the speech service' }, 502);
-  }
-
-  // Charged by Azure the moment it returned, whether or not it heard words.
-  await recordUsage(env.DB, user.id, 'pronounce', now);
-
-  const best = Array.isArray(data.NBest) ? data.NBest[0] : null;
-  if (data.RecognitionStatus !== 'Success' || !best) {
-    // NoMatch / InitialSilenceTimeout: nothing to grade, and the page has its
-    // own "didn't catch that" copy for it.
-    return json({ recognized: false, status: String(data.RecognitionStatus || 'NoMatch') });
-  }
-
-  const overallRaw = best.PronunciationAssessment || {};
-  // Insertions are words the learner said that aren't in the card. The page
-  // maps this list onto the card's characters in order, so keeping them would
-  // shift every following character onto the wrong score.
-  const words = (Array.isArray(best.Words) ? best.Words : [])
-    .filter((w) => String((w.PronunciationAssessment || {}).ErrorType || '') !== 'Insertion')
-    .map((w) => {
-      const assessment = w.PronunciationAssessment || {};
-      return {
-        word: String(w.Word || ''),
-        accuracy: roundScore(assessment.AccuracyScore),
-        status: wordStatus(assessment),
-      };
-    })
-    .filter((w) => w.word);
-
-  return json({
-    recognized: true,
-    display: String(data.DisplayText || best.Display || ''),
-    overall: {
-      pron: roundScore(overallRaw.PronScore),
-      accuracy: roundScore(overallRaw.AccuracyScore),
-      fluency: roundScore(overallRaw.FluencyScore),
-      completeness: roundScore(overallRaw.CompletenessScore),
-    },
-    words,
-  });
-}
-
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -1122,15 +969,6 @@ export default {
         return await handleTranslate(request, env);
       } catch (err) {
         console.log(JSON.stringify({ event: 'translate_error', error: String(err && err.stack || err) }));
-        return json({ error: 'internal error' }, 500);
-      }
-    }
-    if (pathname === '/api/pronounce') {
-      if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
-      try {
-        return await handlePronounce(request, env);
-      } catch (err) {
-        console.log(JSON.stringify({ event: 'pronounce_error', error: String(err && err.stack || err) }));
         return json({ error: 'internal error' }, 500);
       }
     }

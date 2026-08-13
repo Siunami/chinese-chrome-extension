@@ -24,7 +24,6 @@ const ROUTES = [
   { path: '/api/news', method: 'POST', expect: [401] },
   { path: '/api/ask', method: 'POST', expect: [401] },
   { path: '/api/translate', method: 'POST', expect: [401] },
-  { path: '/api/pronounce', method: 'POST', expect: [401] },
 ];
 
 console.log(`worker-smoke: ${base}\n`);

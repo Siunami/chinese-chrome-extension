@@ -1,5 +1,5 @@
-// Hover-to-define for the extension's OWN pages (review, library, news,
-// pronunciation practice, the HSK guides).
+// Hover-to-define for the extension's OWN pages (review, library, news, the
+// HSK guides).
 //
 // Content scripts are not injected into chrome-extension:// pages, so these
 // pages cannot get the hover popup the normal way. They get it here instead:
@@ -68,9 +68,7 @@ export function createLookup({ getEnabled = () => true, hoverTitle = '' } = {}) 
 
   // Make an existing set of per-character spans hoverable. `source` is
   // { text, spans } with spans indexed by code point (holes allowed for
-  // punctuation). Pages that already build their own spans for other reasons —
-  // pronunciation practice colors them by score — pass theirs in rather than
-  // having a second set built around them.
+  // punctuation).
   function attach(source) {
     source.spans.forEach((character, index) => {
       if (!character) return;
@@ -109,7 +107,6 @@ export function createLookup({ getEnabled = () => true, hoverTitle = '' } = {}) 
 
   return {
     hoverable,
-    attach,
     hide: () => popup.hide(),
   };
 }
