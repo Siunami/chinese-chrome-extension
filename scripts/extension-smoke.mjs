@@ -1098,6 +1098,99 @@ for (let i = 0; i < 97; i++) {
   });
 }
 
+// Importing a Pleco deck. Driven through the real flow — parse, resolve every
+// headword against the bundled dictionary, preview, drop a row, confirm —
+// because the part that matters is that an imported card comes out
+// indistinguishable from one saved off a web page.
+await check('a Pleco export previews before it imports, and rows can be dropped', async () => {
+  await library.setViewport(1365, 900);
+  await library.evalJs('chrome.storage.local.set({ wordlist: [] })');
+  await library.evalJs('location.reload()');
+  await library.waitFor('!!document.getElementById("import")', 'the import button');
+
+  // The file input is driven directly: CDP cannot open a native file picker.
+  await library.evalJs(`(() => {
+    const text = [
+      '电脑[電腦]\\tdian4nao3\\tnoun computer',
+      '学习[學習]\\txue2xi2\\tverb to study',
+      '蹦极[蹦極]\\tbeng4ji2\\tbungee jumping',
+      'Headword\\tPinyin\\tDefinition',
+    ].join('\\n');
+    const file = new File([text], 'flash.txt', { type: 'text/plain' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const input = document.getElementById('importFile');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+
+  await library.waitFor('!document.getElementById("importPreview").hidden', 'the preview');
+  // Nothing may be in the library yet — the preview is a question, not a result.
+  assert.equal(await library.evalJs(
+    '(async () => ((await chrome.storage.local.get("wordlist")).wordlist || []).length)()'), 0,
+  'the import wrote cards before being confirmed');
+
+  const rows = () => library.evalJs(
+    '[...document.querySelectorAll(".imp-row .imp-hanzi")].map(e => e.textContent)');
+  assert.deepEqual(await rows(), ['电脑', '学习', '蹦极'],
+    'the English header row should not have become a card');
+
+  // The dictionary supplies the real definition; Pleco's is only a fallback.
+  const first = await library.evalJs(
+    'document.querySelector(".imp-row .imp-defs").textContent');
+  assert.match(first, /computer/i);
+  assert.equal(await library.evalJs(
+    'document.querySelectorAll(".imp-row .imp-alt")[0].textContent'), '電腦',
+  'the traditional form did not come through');
+
+  // Drop one, and the count on the confirm button follows.
+  await library.evalJs(`(() => {
+    const row = [...document.querySelectorAll('.imp-row')]
+      .find(r => r.textContent.includes('蹦极'));
+    row.querySelector('.imp-drop').click();
+  })()`);
+  await library.waitFor('document.querySelectorAll(".imp-row").length === 2', 'the drop');
+  assert.deepEqual(await rows(), ['电脑', '学习']);
+  assert.match(await library.evalJs('document.getElementById("importConfirm").textContent'),
+    /^Add 2 cards$/);
+  await library.shot('pleco-preview');
+
+  await library.evalJs('document.getElementById("importConfirm").click()');
+  await library.waitFor('document.getElementById("importPreview").hidden', 'the preview to close');
+  await library.waitFor('document.querySelectorAll("#list tbody tr").length === 2', 'the rows');
+
+  const saved = await library.evalJs(
+    '(async () => (await chrome.storage.local.get("wordlist")).wordlist)()');
+  assert.equal(saved.length, 2, 'the dropped card was imported anyway');
+  const computer = saved.find((w) => w.simp === '电脑');
+  assert.ok(computer, 'the imported card is missing');
+  assert.equal(computer.trad, '電腦');
+  assert.equal(computer.cardType, 'word');
+  assert.equal(computer.srs, null, 'an imported card should start unstudied');
+  // Resolved through lib/cards.js, so it carries what a saved card carries.
+  assert.match(computer.pinyin, /diàn\s*nǎo/, `pinyin was ${computer.pinyin}`);
+  assert.ok(computer.tones, 'no tone data, so the card cannot be tone-coloured');
+  assert.match(computer.defs, /computer/i);
+});
+
+await check('importing the same deck twice adds nothing the second time', async () => {
+  await library.evalJs(`(() => {
+    const file = new File(['电脑[電腦]\\tdian4nao3\\tnoun computer'], 'flash.txt');
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const input = document.getElementById('importFile');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await library.waitFor('!document.getElementById("importPreview").hidden', 'the preview');
+  assert.equal(await library.evalJs('document.querySelectorAll(".imp-row").length'), 0);
+  assert.match(await library.evalJs('document.querySelector(".imp-head").textContent'),
+    /0 cards to add.*1 already in your library/);
+  assert.equal(await library.evalJs('document.getElementById("importConfirm").disabled'), true);
+  await library.evalJs('document.getElementById("importCancel").click()');
+  await library.waitFor('document.getElementById("importPreview").hidden', 'the preview to close');
+});
+
 // The script toggle. It existed only as a dropdown in Options, and only the
 // hover popup read it — the library and the review card always led with
 // simplified, so a traditional reader studied the wrong form of their own

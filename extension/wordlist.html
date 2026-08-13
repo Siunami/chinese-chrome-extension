@@ -7,7 +7,45 @@
   <style>
     :root { --zx-measure: 1040px; }
     body.zx-app { font-size: 14px; }
-    .toolbar { margin: 12px 0 20px; display: flex; gap: 10px; align-items: center; }
+    .toolbar { margin: 12px 0 20px; display: flex; gap: 10px; align-items: center;
+      flex-wrap: wrap; }
+    .import-status { margin: -10px 0 18px; padding: 9px 12px; border-radius: 9px;
+      border: 1px solid var(--zx-line); background: #fffdf7; color: #555;
+      font-size: 12.5px; line-height: 1.5; }
+    .import-status[hidden] { display: none !important; }
+    .import-status.bad { border-color: #e2b8b8; background: #fdf4f4; color: #8f1c23; }
+    .import-status b { color: var(--zx-ink); }
+
+    /* Pleco import preview: what is about to be added, before it is added. */
+    .imp { margin: -6px 0 18px; border: 1px solid var(--zx-line); border-radius: 12px;
+      background: #fffdf7; overflow: hidden; }
+    .imp[hidden] { display: none !important; }
+    .imp-head { padding: 12px 14px; border-bottom: 1px solid var(--zx-line-soft);
+      font-size: 13px; }
+    .imp-note { color: var(--zx-muted); }
+    /* Scrolls: a Pleco deck is hundreds of cards and the list must not push the
+       confirm button off the bottom of the page. */
+    .imp-list { max-height: 340px; overflow-y: auto; }
+    .imp-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 14px;
+      border-bottom: 1px solid #f0ece0; }
+    .imp-row:last-child { border-bottom: 0; }
+    .imp-text { flex: 1; min-width: 0; }
+    .imp-word { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .imp-hanzi { font-size: 17px;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .imp-alt { color: #999; font-size: 14px;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .imp-pinyin { color: #555; font-size: 12.5px; }
+    .imp-badge { padding: 1px 6px; border-radius: 8px; background: #fbeed6;
+      color: #8a6d20; font-size: 9.5px; font-weight: 700; text-transform: uppercase; }
+    .imp-defs { color: var(--zx-muted); font-size: 12.5px; line-height: 1.45;
+      margin-top: 2px; overflow-wrap: anywhere; }
+    .imp-drop { flex: none; padding: 2px 8px; border: 0; border-radius: 7px;
+      background: none; color: #bbb; font-size: 13px; cursor: pointer; }
+    .imp-drop:hover { background: #fbe4e4; color: #a33; }
+    .imp-empty { padding: 16px 14px; color: var(--zx-muted); font-size: 12.5px; }
+    .imp-actions { display: flex; gap: 8px; padding: 12px 14px;
+      border-top: 1px solid var(--zx-line-soft); }
 
     /* The table used to size itself: every column but Definition was nowrap,
        so with `table-layout: auto` they each claimed their widest row and the
@@ -107,10 +145,15 @@
   <main class="zx-content">
   <h2 class="zx-title">Saved library</h2>
   <div class="toolbar">
+    <button id="import">Import from Pleco</button>
+    <input type="file" id="importFile" accept=".txt,.tsv,.xml,.pqb,text/plain,text/xml"
+           hidden>
     <button id="export">Export TSV (Anki / Pleco)</button>
     <button id="clear">Clear all</button>
     <span class="count" id="count"></span>
   </div>
+  <p class="import-status" id="importStatus" hidden></p>
+  <div class="imp" id="importPreview" hidden></div>
   <div id="overview"></div>
   <div id="filters"></div>
   <div id="list"></div>

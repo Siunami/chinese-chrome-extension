@@ -5,7 +5,8 @@ import {
 import {
   STAGE_COLORS, STAGE_LABELS, STAGE_NOTES, forecastChart, stageBar, strengthMeter,
 } from './lib/progress.js';
-import { tombstoneFor } from './lib/merge.js';
+import { cardKey, tombstoneFor } from './lib/merge.js';
+import { parsePlecoExport } from './lib/pleco.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
@@ -343,6 +344,201 @@ function render(words) {
   table.append(tbody);
   listEl.append(table);
 }
+
+// ---------------------------------------------------------------------------
+// Importing a Pleco deck
+//
+// Pleco is where a lot of people's Chinese already lives, and its cards are
+// the words they actually looked up — a much better starting deck than
+// anything this extension could guess for them.
+//
+// Nothing is added on picking the file. A deck is hundreds of cards and a
+// review queue you did not choose is worse than no import at all, so the file
+// is parsed and resolved into a list you scroll, drop rows from, and then
+// confirm. Cards already in the library never appear in it.
+//
+// Each headword goes through the same resolver a word saved from a web page
+// does (lib/cards.js, in the background worker where the dictionary lives), so
+// an imported card is indistinguishable from a saved one: real CC-CEDICT
+// definitions, both scripts, tone-coloured pinyin. Pleco's own pinyin and
+// definition are the fallback for a word CC-CEDICT has never heard of — a
+// name, slang, something out of a user dictionary — rather than a reason to
+// drop the card.
+// ---------------------------------------------------------------------------
+
+const RESOLVE_BATCH = 300; // the background worker caps a single request at 400
+
+const importStatusEl = document.getElementById('importStatus');
+const importFileEl = document.getElementById('importFile');
+const importPreviewEl = document.getElementById('importPreview');
+
+let pending = []; // candidates on screen, in the order they will be added
+
+function showImportStatus(nodes, bad = false) {
+  importStatusEl.replaceChildren(...nodes);
+  importStatusEl.classList.toggle('bad', bad);
+  importStatusEl.hidden = false;
+}
+
+function closeImport() {
+  pending = [];
+  importPreviewEl.replaceChildren();
+  importPreviewEl.hidden = true;
+}
+
+// A card built from what Pleco said, for a headword the dictionary does not
+// have. Pleco's numbered pinyin is kept as written rather than dressed up as
+// something it is not.
+function plecoCard(item) {
+  return {
+    cardType: 'word',
+    simp: item.simp,
+    trad: item.trad || item.simp,
+    pinyin: item.pinyin || '',
+    tones: '',
+    defs: item.defs || '',
+    sourceWord: '',
+  };
+}
+
+function renderImportPreview(summary) {
+  importPreviewEl.replaceChildren();
+  importPreviewEl.hidden = false;
+
+  const head = el('div', 'imp-head');
+  head.append(el('b', '', `${plural(pending.length, 'card')} to add`));
+  const notes = [];
+  if (summary.duplicate) notes.push(`${summary.duplicate} already in your library`);
+  if (summary.skipped) notes.push(`${plural(summary.skipped, 'row')} with no Chinese`);
+  notes.push(`from a Pleco ${summary.format === 'xml' ? 'XML' : 'text'} export`);
+  head.append(el('span', 'imp-note', ` · ${notes.join(' · ')}`));
+  importPreviewEl.append(head);
+
+  const list = el('div', 'imp-list');
+  if (!pending.length) {
+    list.append(el('div', 'imp-empty',
+      'Nothing left to add — every card in that file is already in your library, '
+      + 'or you removed it from this list.'));
+  }
+  for (const item of pending) {
+    const row = el('div', 'imp-row');
+    const text = el('div', 'imp-text');
+    const face = forms(item.card, hanziPref);
+    const headline = el('div', 'imp-word');
+    headline.append(el('span', 'imp-hanzi', face.primary));
+    if (face.secondary) headline.append(el('span', 'imp-alt', face.secondary));
+    if (item.pinyin) headline.append(el('span', 'imp-pinyin', item.pinyin));
+    // Worth flagging: this row's definition is Pleco's, not the dictionary's.
+    if (!item.known) headline.append(el('span', 'imp-badge', 'not in CC-CEDICT'));
+    text.append(headline, el('div', 'imp-defs', item.card.defs || '(no definition)'));
+    const drop = el('button', 'imp-drop', '✕');
+    drop.type = 'button';
+    drop.title = `Do not import ${face.primary}`;
+    drop.setAttribute('aria-label', `Remove ${face.primary} from this import`);
+    drop.addEventListener('click', () => {
+      pending = pending.filter((p) => p.key !== item.key);
+      renderImportPreview(summary);
+    });
+    row.append(text, drop);
+    list.append(row);
+  }
+  importPreviewEl.append(list);
+
+  const actions = el('div', 'imp-actions');
+  const confirm = el('button', 'primary', `Add ${plural(pending.length, 'card')}`);
+  confirm.type = 'button';
+  confirm.id = 'importConfirm';
+  confirm.disabled = !pending.length;
+  confirm.addEventListener('click', commitImport);
+  const cancel = el('button', '', 'Cancel');
+  cancel.type = 'button';
+  cancel.id = 'importCancel';
+  cancel.addEventListener('click', () => {
+    closeImport();
+    showImportStatus([el('span', '', 'Import cancelled — nothing was added.')]);
+  });
+  actions.append(confirm, cancel);
+  importPreviewEl.append(actions);
+}
+
+async function commitImport() {
+  const now = Date.now();
+  const cards = pending.map((p) => ({
+    ...p.card, savedAt: now, lastSavedAt: now, touches: 1, srs: null,
+  }));
+  const count = cards.length;
+  closeImport();
+  if (!count) return;
+  // Re-read rather than trusting the list this preview was built from: a sync
+  // or another tab may have added cards while it was on screen.
+  const existing = await getWords();
+  const have = new Set(existing.map(cardKey));
+  const fresh = cards.filter((c) => !have.has(cardKey(c)));
+  await chrome.storage.local.set({ wordlist: fresh.concat(existing) });
+  chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
+  showImportStatus([
+    el('b', '', `Added ${plural(fresh.length, 'card')}`),
+    el('span', '', ' to your library. They start as new cards, due today.'),
+  ]);
+  render(await getWords());
+}
+
+async function importPleco(text) {
+  closeImport();
+  const { items, format, skipped } = parsePlecoExport(text);
+  if (!items.length) {
+    showImportStatus([el('span', '', skipped
+      ? `Found ${plural(skipped, 'row')} but no Chinese in any of them — is this a Pleco card export?`
+      : 'No cards in that file. Export from Pleco with Cards → Export Cards, as either a '
+        + 'Pleco Flashcard File (XML) or a Text File.')], true);
+    return;
+  }
+
+  showImportStatus([el('span', '', `Looking up ${plural(items.length, 'card')}…`)]);
+
+  const have = new Set((await getWords()).map(cardKey));
+  const summary = { duplicate: 0, skipped, format };
+  pending = [];
+
+  for (let i = 0; i < items.length; i += RESOLVE_BATCH) {
+    const chunk = items.slice(i, i + RESOLVE_BATCH);
+    const answer = await chrome.runtime.sendMessage({
+      type: 'resolveCards',
+      // `unit: true` says this is one dictionary headword, not prose, so the
+      // resolver does not refuse a card for looking like several sentences.
+      items: chunk.map((item) => ({ text: item.simp, unit: true })),
+    }).catch(() => null);
+
+    chunk.forEach((item, n) => {
+      const resolved = answer?.cards?.[n];
+      // Only take the resolver's word when it actually matched a headword: its
+      // fallback is a sentence card, which is not what a Pleco entry is.
+      const known = !!(resolved?.card && resolved.card.cardType === 'word');
+      const card = known ? resolved.card : plecoCard(item);
+      const key = cardKey(card);
+      if (have.has(key)) { summary.duplicate++; return; }
+      have.add(key); // the same word under two headwords is still one card
+      pending.push({ key, card, known, pinyin: card.pinyin || item.pinyin });
+    });
+  }
+
+  importStatusEl.hidden = true;
+  renderImportPreview(summary);
+}
+
+document.getElementById('import').addEventListener('click', () => importFileEl.click());
+
+importFileEl.addEventListener('change', async () => {
+  const file = importFileEl.files?.[0];
+  // Reset first: picking the same file twice in a row must re-run the import.
+  importFileEl.value = '';
+  if (!file) return;
+  try {
+    await importPleco(await file.text());
+  } catch (err) {
+    showImportStatus([el('span', '', `Could not read that file: ${err.message}`)], true);
+  }
+});
 
 document.getElementById('export').addEventListener('click', async () => {
   const words = await getWords();

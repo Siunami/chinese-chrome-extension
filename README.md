@@ -70,6 +70,17 @@ does well that popup dictionaries usually don't: **real example sentences**
   Homographs are ranked with the everyday sense first, and each dictionary
   entry has its own ☆/✓ control when you need to save a specific
   pronunciation and definition.
+- **Import your Pleco deck** — the words you have already looked up are a far
+  better starting deck than anything this extension could guess. **Import from
+  Pleco** on the saved library reads both of Pleco's export shapes (Cards →
+  Export Cards, either the XML flashcard file or the tab-separated text one),
+  and nothing is added on picking the file: every headword is resolved against
+  CC-CEDICT and shown as a list you scroll, drop rows from, and confirm. Cards
+  already in your library never appear in it. An imported card comes out
+  indistinguishable from one saved off a web page — real definitions, both
+  scripts, tone-coloured pinyin — with Pleco's own pinyin and definition kept
+  as the fallback for a word the dictionary has never heard of (a name, slang,
+  something from a user dictionary) rather than a reason to drop it.
 - **Word history page** — every saved word with date, save count, per-row
   delete, and TSV export (`headword[traditional] <tab> pinyin <tab> definition`
   — Pleco's flashcard import format, also mappable in Anki). Each row also
