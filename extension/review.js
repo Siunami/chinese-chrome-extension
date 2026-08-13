@@ -12,6 +12,7 @@ import { gradePronunciation } from './lib/pronounce.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
+import { forms, getHanziPref, onHanziPref } from './lib/hanzi.js';
 
 const { createSelectionBar } = globalThis.ZhongwenSaveCard;
 
@@ -29,6 +30,9 @@ let grading = false; // synchronous guard: a grade is being persisted
 let sessionAgain = []; // 'again' cards come back at the end of the session
 let activeRecognition = null; // in-flight SpeechRecognition, if any
 let pronounceSeq = 0; // invalidates recognition results after the card changes
+
+// Which script to lead with, read at init and kept live by the navbar toggle.
+let hanziPref = 'simp-first';
 
 // Daily limits, read from options at init.
 let limits = { ...DEFAULT_LIMITS };
@@ -538,11 +542,14 @@ async function renderCard() {
   const card = el('div', 'card');
   const sentenceCard = current.cardType === 'sentence';
   if (sentenceCard) card.append(el('div', 'card-type', 'Sentence'));
+  // Lead with the script the learner reads in; the other form stays below,
+  // smaller, so the card still teaches both.
+  const face = forms(current, hanziPref);
   card.append(lookup.hoverable(
-    'div', `hanzi${sentenceCard ? ' sentence' : ''}`, current.simp,
+    'div', `hanzi${sentenceCard ? ' sentence' : ''}`, face.primary,
   ));
-  if (!sentenceCard && current.trad && current.trad !== current.simp) {
-    card.append(lookup.hoverable('div', 'trad', current.trad));
+  if (!sentenceCard && face.secondary) {
+    card.append(lookup.hoverable('div', 'trad', face.secondary));
   }
   const controls = el('div', 'controls');
   const revealBtn = el('button', '', 'Show answer');
@@ -560,7 +567,7 @@ async function reveal() {
   card.querySelector('.controls').remove();
 
   const answerLine = el('div', 'answer-line');
-  answerLine.append(pinyinEl(current), speakButton(current.simp));
+  answerLine.append(pinyinEl(current), speakButton(forms(current, hanziPref).primary));
   card.append(answerLine);
   card.append(el('div', 'defs', current.defs));
   const ex = current.cardType === 'sentence' ? null : await exampleBlock(current);
@@ -654,7 +661,9 @@ document.addEventListener('keydown', (e) => {
     grade(GRADES[Number(e.key) - 1]);
   } else if (revealed && e.key.toLowerCase() === 'p') {
     e.preventDefault();
-    chrome.runtime.sendMessage({ type: 'speak', text: current.simp, slow: e.shiftKey });
+    chrome.runtime.sendMessage({
+      type: 'speak', text: forms(current, hanziPref).primary, slow: e.shiftKey,
+    });
   }
 });
 
@@ -670,11 +679,32 @@ async function loadLimits() {
   };
 }
 
+// Flipping the navbar toggle changes the card in place — the point of a toggle
+// is seeing the change. Swapping the two lines rather than re-rendering keeps a
+// revealed card revealed; re-running renderCard() here would hide the answer
+// the learner was in the middle of reading.
+onHanziPref((pref) => {
+  hanziPref = pref;
+  if (!current) return;
+  const card = appEl.querySelector('.card');
+  if (!card) return;
+  const face = forms(current, hanziPref);
+  const primary = card.querySelector('.hanzi');
+  if (primary) {
+    primary.replaceWith(lookup.hoverable('div', primary.className, face.primary));
+  }
+  const secondary = card.querySelector('.trad');
+  if (face.secondary && secondary) {
+    secondary.replaceWith(lookup.hoverable('div', 'trad', face.secondary));
+  }
+});
+
 async function init() {
   // Pull grades made on the phone before building today's queue, but never
   // hold the page hostage to a slow network (no-op when sync is unpaired).
   await Promise.all([
     loadLimits(),
+    getHanziPref().then((p) => { hanziPref = p; }),
     Promise.race([
       chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {}),
       new Promise((resolve) => setTimeout(resolve, 1500)),

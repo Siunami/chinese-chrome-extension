@@ -1,11 +1,17 @@
 import { DEFAULT_SERVER_URL, getAiKey, getSyncMeta, newToken, pairUrl } from './lib/sync.js';
 import { DEFAULT_LIMITS } from './lib/srs.js';
 import { mountShell } from './lib/shell.js';
+import { onHanziPref } from './lib/hanzi.js';
 import qrcode from './lib/qr.js';
 
 // Settings is a destination in the app, not a detached preferences window, so
 // it wears the same navbar as every other page.
 mountShell({ active: 'options' });
+
+// The navbar's 简/繁 toggle and the Character preference dropdown below are the
+// same setting, and on this page they are both on screen. Flipping one has to
+// move the other, or the page contradicts itself.
+onHanziPref((pref) => { els.hanziPref.value = pref; });
 
 const DEFAULTS = {
   theme: 'yellow',

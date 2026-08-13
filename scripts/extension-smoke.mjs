@@ -190,6 +190,16 @@ const CHROME_SHIM = `
     const persist = () => {
       try { localStorage.setItem(KEY, JSON.stringify(store)); } catch { /* quota */ }
     };
+    // Change events are how the app keeps itself in step with itself — live
+    // due counts, the library repainting on a save, the script toggle. A shim
+    // that silently never fires them leaves all of that untested.
+    const listeners = [];
+    const notify = (name, changes) => {
+      if (!Object.keys(changes).length) return;
+      for (const fn of listeners.slice()) {
+        try { fn(changes, name); } catch { /* a listener must not break a write */ }
+      }
+    };
     const area = (name) => ({
       get(keys) {
         const bag = store[name];
@@ -205,13 +215,25 @@ const CHROME_SHIM = `
         return Promise.resolve(out);
       },
       set(values) {
+        const changes = {};
+        for (const [k, v] of Object.entries(values)) {
+          const oldValue = store[name][k];
+          if (JSON.stringify(oldValue) === JSON.stringify(v)) continue;
+          changes[k] = oldValue === undefined ? { newValue: v } : { oldValue, newValue: v };
+        }
         Object.assign(store[name], values);
         persist();
+        notify(name, changes);
         return Promise.resolve();
       },
       remove(keys) {
-        for (const k of [].concat(keys)) delete store[name][k];
+        const changes = {};
+        for (const k of [].concat(keys)) {
+          if (k in store[name]) changes[k] = { oldValue: store[name][k] };
+          delete store[name][k];
+        }
         persist();
+        notify(name, changes);
         return Promise.resolve();
       },
     });
@@ -271,7 +293,13 @@ const CHROME_SHIM = `
       storage: {
         local: area('local'),
         sync: area('sync'),
-        onChanged: { addListener() {}, removeListener() {} },
+        onChanged: {
+          addListener: (fn) => listeners.push(fn),
+          removeListener: (fn) => {
+            const i = listeners.indexOf(fn);
+            if (i >= 0) listeners.splice(i, 1);
+          },
+        },
       },
       tts: { speak: () => Promise.resolve(), stop() {}, getVoices: () => Promise.resolve([]) },
     };
@@ -738,6 +766,14 @@ await check('a real mouse drag selects passage text and offers to save or ask ab
 await check('hover lookups resume once the quote is attached', async () => {
   assert.equal(await hsk.evalJs('getSelection().isCollapsed'), true,
     'the live selection outlived the quote and would keep hover suppressed');
+  // Attaching the quote opens the drawer, which narrows the document and
+  // reflows the guide *under the real pointer* — parked over the passage since
+  // the walk to the selection bar. The resulting mouseleave lands after the
+  // synthetic mouseenter below and wipes the highlight it asked for. Park the
+  // pointer somewhere with nothing hoverable under it first, so the only hover
+  // in play is the one this check is testing.
+  await hsk.moveMouseTo(3, 3);
+  await hsk.settle();
   assert.equal(await hsk.evalJs(hover('.passage p .lookup-char')), true);
   await hsk.waitFor('document.querySelectorAll(".lookup-hit").length > 0', 'phrase highlight');
 });
@@ -1061,6 +1097,55 @@ for (let i = 0; i < 97; i++) {
       : { reps: 1, lapses: 0, ease: 2.5, intervalDays: 1, due: Date.now() + 86400000 },
   });
 }
+
+// The script toggle. It existed only as a dropdown in Options, and only the
+// hover popup read it — the library and the review card always led with
+// simplified, so a traditional reader studied the wrong form of their own
+// cards.
+await check('the script toggle flips the library between simplified and traditional', async () => {
+  await library.setViewport(1365, 900);
+  await library.evalJs(`chrome.storage.local.set({ wordlist: [{
+    cardType: 'word', simp: '电脑', trad: '電腦', pinyin: 'diàn nǎo',
+    defs: 'computer', savedAt: 1, lastSavedAt: 1, touches: 1, srs: null }] })`);
+  await library.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
+  await library.evalJs('location.reload()');
+  await library.waitFor('!!document.querySelector("#list tbody td.hanzi")', 'the row');
+
+  const row = () => library.evalJs(`(() => {
+    const tds = [...document.querySelectorAll('#list tbody tr:first-child td')];
+    return {
+      primary: tds[0].textContent.replace(/[^\u4e00-\u9fff]/g, ''),
+      secondary: tds[1].textContent.replace(/[^\u4e00-\u9fff]/g, ''),
+      heading: document.querySelectorAll('#list thead th')[1].textContent,
+      pressed: document.querySelector('.zx-script-btn[aria-pressed="true"]').dataset.pref,
+    };
+  })()`);
+
+  const simp = await row();
+  assert.deepEqual([simp.primary, simp.secondary], ['电脑', '電腦']);
+  assert.equal(simp.heading, 'Trad.');
+  assert.equal(simp.pressed, 'simp-first');
+
+  // Flipping repaints in place — no reload, and the second column's heading
+  // follows, because it names whichever script you are *not* reading in.
+  await library.evalJs('document.querySelector(\'.zx-script-btn[data-pref="trad-first"]\').click()');
+  await library.waitFor(
+    'document.querySelector("#list tbody td.hanzi").textContent.includes("電")', 'the flip');
+  const trad = await row();
+  assert.deepEqual([trad.primary, trad.secondary], ['電腦', '电脑']);
+  assert.equal(trad.heading, 'Simp.');
+  assert.equal(trad.pressed, 'trad-first');
+  await library.shot('script-traditional');
+
+  // It is one setting, so it survives a reload and would be there on any page.
+  await library.evalJs('location.reload()');
+  await library.waitFor('!!document.querySelector("#list tbody td.hanzi")', 'the row');
+  assert.equal((await row()).primary, '電腦', 'the choice did not stick');
+
+  await library.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
+  await library.evalJs('location.reload()');
+  await library.waitFor('!!document.querySelector("#list tbody td.hanzi")', 'the row');
+});
 
 await check('a full library fits its column without overflowing', async () => {
   await library.setViewport(1365, 900);
