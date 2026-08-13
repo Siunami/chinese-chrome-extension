@@ -12,7 +12,8 @@ import { resolveCard, isMachineGloss } from './lib/cards.js';
 import { buildScriptMap, convertText, TO_TRAD, TO_SIMP } from './lib/script.js';
 import { translateGlossed, isPermanent } from './lib/translate.js';
 import { cardKey, tombstoneFor } from './lib/merge.js';
-import { aiHeaders, getAiKey, getSyncMeta, syncNow } from './lib/sync.js';
+import { getAiKey, getSyncMeta, syncNow } from './lib/sync.js';
+import { postAi } from './lib/aistatus.js';
 
 // ---------------------------------------------------------------------------
 // Data loading (lazy; the worker may be restarted at any time)
@@ -279,18 +280,17 @@ async function handleSaveWord(msg) {
 let translating = false;
 
 async function requestTranslation(meta, text) {
-  const res = await fetch(`${meta.serverUrl.replace(/\/+$/, '')}/api/translate`, {
-    method: 'POST',
-    headers: await aiHeaders(meta),
-    body: JSON.stringify({ text }),
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok || !data || data.error) {
-    const error = new Error(data?.detail || data?.error || `http ${res.status}`);
-    error.permanent = isPermanent(res.status);
-    throw error;
+  try {
+    return await postAi(meta, '/api/translate', { text });
+  } catch (err) {
+    // A card the model will never translate (not Chinese, too long, nothing
+    // translatable in it) must not come back on every sweep. A rejected key is
+    // the opposite: the same card is worth trying again the moment a working
+    // key is pasted, so it is explicitly not permanent.
+    err.permanent = isPermanent(err.status) && err.code !== 'bad-key'
+      && err.code !== 'no-quota' && err.code !== 'no-key';
+    throw err;
   }
-  return data;
 }
 
 // Rewrite by identity against the freshest list: the card may have been

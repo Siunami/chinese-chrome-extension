@@ -1,7 +1,8 @@
 // Shared progress visuals: the upcoming-reviews forecast, the collection's
-// position on the spaced-repetition curve, and the small per-card strength
-// meter. Used by the review page's end-of-session screen and by the saved
-// library, so both tell the same story with the same colors.
+// position on the spaced-repetition curve, the small per-card strength meter,
+// and the HSK level ladder a placement interview leaves behind. Used by the
+// review page's end-of-session screen, the saved library, and the placement
+// page, so they tell the same story with the same colors.
 //
 // Palette notes (these are not arbitrary — they were validated for contrast
 // and color-vision deficiency against a white surface):
@@ -10,6 +11,10 @@
 //   stages     new → learning → young → mature is an *ordered* scale, so it
 //              gets one hue stepped light→dark rather than four unrelated
 //              colors; the lightest step still clears the surface.
+//   ladder     held / shaky / lost is ordered too, but it is a verdict rather
+//              than a quantity, so it borrows the same ramp's ends and takes
+//              the app's red for the level that came apart — the one row a
+//              reader should find without hunting.
 
 import { STAGES, forecast, stageCounts, strength, cardStage } from './srs.js';
 
@@ -88,6 +93,35 @@ const CSS = `
 .viz-table th { color: var(--viz-muted); font-size: 11px; }
 .viz-details > summary { cursor: pointer; color: var(--viz-muted);
   font-size: 11.5px; margin-top: 8px; }
+
+/* Level ladder: nine rows, HSK 9 at the top, so it reads as a staircase you
+   climb rather than a list you scroll. Each row's bar is that level's mark on
+   a fixed 0-100% track — fixed, because the point of the chart is comparing
+   level against level, and a bar rescaled to the run's own maximum would draw
+   a level you barely held exactly as long as one you aced. */
+.ladder { display: flex; flex-direction: column-reverse; gap: 3px; margin: 4px 0 2px; }
+.lad-row { display: grid; grid-template-columns: 46px 1fr 64px; align-items: center;
+  gap: 8px; padding: 2px 0; border-radius: 5px; }
+/* The row the placement came from. A tint plus the accent on its own label —
+   an inset rule down the left edge picked up the row's corner radius and read
+   as a stray bracket in front of the level number. */
+.lad-row[data-here="1"] { background: #fdf6e8; }
+.lad-row[data-here="1"] .lad-name { color: var(--viz-accent); font-weight: 700; }
+.lad-name { font-size: 11.5px; font-weight: 600; color: var(--viz-ink);
+  padding-left: 5px; }
+.lad-row[data-verdict="untested"] .lad-name { color: var(--viz-muted); font-weight: 400; }
+.lad-track { position: relative; height: 13px; border-radius: 3px;
+  background: var(--viz-track); overflow: hidden; }
+/* The threshold a level has to clear to count as held. Drawn on every row so
+   the bars are read against the rule, not against each other. */
+.lad-track::after { content: ''; position: absolute; top: 0; bottom: 0;
+  left: 70%; width: 1px; background: rgba(0, 0, 0, 0.18); }
+.lad-fill { height: 100%; border-radius: 3px; }
+.lad-verdict { font-size: 10.5px; color: var(--viz-muted); text-align: right;
+  font-variant-numeric: tabular-nums; }
+.lad-row[data-verdict="sustained"] .lad-verdict,
+.lad-row[data-verdict="struggled"] .lad-verdict { color: var(--viz-ink); }
+.lad-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 9px; }
 `;
 
 let cssInjected = false;
@@ -257,6 +291,100 @@ export function stageBar(words, { title = 'Where your cards are' } = {}) {
     legend.append(item);
   }
   root.append(legend);
+  return root;
+}
+
+// ---------------------------------------------------------------------------
+// Level ladder: what a placement interview found at each HSK level
+// ---------------------------------------------------------------------------
+
+export const VERDICT_COLORS = {
+  sustained: '#256abf',  // held — the ramp's established end
+  partial: '#86b6ef',    // shaky — the same hue, unresolved
+  struggled: '#b5232b',  // lost — the app's red, and the row that matters
+  untested: '#d8dee6',
+};
+
+const VERDICT_TEXT = {
+  sustained: 'held',
+  partial: 'shaky',
+  struggled: 'lost it',
+  untested: 'not asked',
+};
+
+// `perLevel` is estimate().perLevel from lib/placement.js: one row per level
+// with { level, probes, score, verdict }. `here` is the placement itself, so
+// the row the number came from is marked in the chart rather than only stated
+// above it.
+//
+// Levels that were never probed are drawn as empty rather than left out. An
+// interview walks a few rungs of a nine-rung ladder, and a chart that silently
+// omitted the rest would read as a complete picture of nine levels.
+export function levelLadder(perLevel, { here = 0, title = 'What the interview found' } = {}) {
+  ensureCss();
+  const root = el('div', 'viz ladder-box');
+  if (title) root.append(el('p', 'viz-title', title));
+  root.append(el('p', 'viz-sub',
+    'Each level you were asked about, scored on understanding the task and '
+    + 'answering it in Chinese. The line marks the mark needed to count as held.'));
+
+  const rows = el('div', 'ladder');
+  for (const row of perLevel) {
+    const line = el('div', 'lad-row');
+    line.dataset.verdict = row.verdict;
+    if (row.level === here) line.dataset.here = '1';
+    const pct = row.score == null ? 0 : Math.round(row.score * 100);
+    const label = row.probes
+      ? `HSK ${row.level}: ${VERDICT_TEXT[row.verdict]}, ${pct}% over `
+        + `${plural(row.probes, 'question')}`
+      : `HSK ${row.level}: not asked about`;
+    line.title = label;
+    line.setAttribute('aria-label', label);
+
+    line.append(el('div', 'lad-name', `HSK ${row.level}`));
+    const track = el('div', 'lad-track');
+    const fill = el('div', 'lad-fill');
+    // A probed level always shows something: a zero-width bar is
+    // indistinguishable from a level nobody asked about, which is the one
+    // distinction this chart exists to make.
+    fill.style.width = row.probes ? `${Math.max(3, pct)}%` : '0';
+    fill.style.background = VERDICT_COLORS[row.verdict];
+    track.append(fill);
+    line.append(track);
+    line.append(el('div', 'lad-verdict', row.probes ? VERDICT_TEXT[row.verdict] : '—'));
+    rows.append(line);
+  }
+  root.append(rows);
+
+  const legend = el('div', 'stage-legend lad-legend');
+  for (const verdict of ['sustained', 'partial', 'struggled', 'untested']) {
+    const item = el('div', 'stage-item');
+    const swatch = el('span', 'stage-swatch');
+    swatch.style.background = VERDICT_COLORS[verdict];
+    item.append(swatch, el('span', 'stage-name', VERDICT_TEXT[verdict]));
+    legend.append(item);
+  }
+  root.append(legend);
+
+  const details = el('details', 'viz-details');
+  details.append(el('summary', '', 'Show these numbers as a table'));
+  const table = el('table', 'viz-table');
+  const head = document.createElement('tr');
+  head.append(el('th', '', 'Level'), el('th', '', 'Questions'),
+    el('th', '', 'Score'), el('th', '', 'Verdict'));
+  table.append(head);
+  for (const row of [...perLevel].reverse()) {
+    const tr = document.createElement('tr');
+    tr.append(
+      el('td', '', `HSK ${row.level}`),
+      el('td', '', String(row.probes)),
+      el('td', '', row.score == null ? '—' : `${Math.round(row.score * 100)}%`),
+      el('td', '', VERDICT_TEXT[row.verdict]),
+    );
+    table.append(tr);
+  }
+  details.append(table);
+  root.append(details);
   return root;
 }
 

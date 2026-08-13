@@ -26,8 +26,11 @@ CREATE INDEX IF NOT EXISTS cards_user_version ON cards(user_id, version);
 CREATE INDEX IF NOT EXISTS cards_deleted ON cards(deleted, deleted_at);
 
 -- One cached AI news digest per user (see /api/news in src/index.js).
--- Rewritten in place on every fresh model call. (Supersedes the earlier
--- `recommendations` table; drop it if a prior version created it.)
+-- Rewritten in place on every fresh model call: this is the anti-spam cache,
+-- not an archive — the client keeps every article it was given, in its own
+-- storage, and the row here only answers a repeat of the same request.
+-- (Supersedes the earlier `recommendations` table; drop it if a prior version
+-- created it.)
 DROP TABLE IF EXISTS recommendations;
 CREATE TABLE IF NOT EXISTS news (
   user_id INTEGER PRIMARY KEY,

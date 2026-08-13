@@ -18,17 +18,23 @@ const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const NEW_USERS_PER_IP_PER_HOUR = 10;
 const SQL_CHUNK = 50; // stay well under D1's bound-parameter limit
 
-// /api/news: read current news on the topics the learner is studying and write
-// them an original Mandarin passage pitched just above their level. The search
-// is either the model's own web tool (OpenAI/Azure) or Google News RSS gathered
-// here (fal) — see providerConfigured. It's expensive, so the Worker caches one
-// digest per user in D1 and won't call the model more than once per
-// NEWS_MIN_INTERVAL — a burst of clicks or new-tab opens cannot run up the bill.
+// /api/news: read current news — on the topics the learner is studying, or on
+// a topic they searched for — and write them an original Mandarin passage at
+// their level. Grounding is Google News RSS gathered here for every provider
+// (see fetchNews). It's expensive, so the Worker caches the last digest per
+// user in D1 and won't repeat the same request inside NEWS_MIN_INTERVAL, with
+// an hourly ceiling behind that: a burst of clicks cannot run up the bill. The
+// cache is not an archive — the client keeps every article it is handed.
 const NEWS_TTL_MS = 12 * 60 * 60 * 1000;
-const NEWS_MIN_INTERVAL_MS = 60 * 1000; // anti-spam floor on same-difficulty regeneration
+const NEWS_MIN_INTERVAL_MS = 60 * 1000; // anti-spam floor on re-asking for the same thing
+// The floor above only stops a burst of identical requests. Searching a topic
+// or picking a category is a different request every time, so a row of chips is
+// a row of model calls — hence an hourly ceiling on fresh generations too.
+const NEWS_PER_HOUR = 30;
 const MAX_PROFILE_BYTES = 20 * 1024;
 const MAX_SOURCES = 8;
 const MAX_ARTICLE_CHARS = 8000;
+const MAX_TOPIC_CHARS = 80;
 // The digest runs on fal.ai (fal-ai/any-llm proxies GPT/Claude/Gemini/Llama —
 // pick with the FAL_MODEL var). fal has no web-search tool, so the Worker does
 // the searching itself: fal infers topics -> Google News RSS (keyless) fetches
@@ -40,11 +46,25 @@ const MAX_QUERIES = 5;
 const MAX_NEWS_ITEMS = 24;
 const NEWS_PER_QUERY = 6;
 
+// /api/news/categories: the browsable sections above the search box, named in
+// Chinese and picked for this learner. One short call, cached on the client for
+// a week, so the cap only has to stop a stuck client.
+const CATEGORIES_PER_HOUR = 20;
+const MAX_CATEGORIES = 8;
+
 // /api/ask: the tutor beside the HSK study guides. One short question at a
 // time about the guide the learner is reading, optionally pointing at a
 // passage they highlighted. Cheap per call, but a chat invites many calls, so
 // it is capped per user per hour.
 const ASK_PER_HOUR = 40;
+
+// /api/placement: one turn of the adaptive placement interview — mark the
+// answer the learner just typed, then set the next task at the level the
+// client asked for. The client owns the ladder (extension/lib/placement.js);
+// this endpoint is stateless and never decides when the interview ends, so a
+// run's length and cost are known in advance. Capped per user per hour in
+// turns, since one interview is a dozen or so calls.
+const PLACEMENT_PER_HOUR = 60;
 
 // /api/translate: an English back for a card whose Chinese is not in the
 // dictionary or the example corpus — a sentence highlighted in an article, or
@@ -60,7 +80,10 @@ const MAX_SELECTION_CHARS = 1200;
 const MAX_CONTEXT_CHARS = 4000;
 const MAX_HISTORY_TURNS = 10;
 const MAX_HISTORY_CHARS = 1500;
-const MAX_ANSWER_CHARS = 4000;
+// A ceiling on a runaway answer, not a target: asked for a story or a walk
+// through a grammar point, the tutor should be able to write one without the
+// last paragraph being sliced off mid-sentence.
+const MAX_ANSWER_CHARS = 9000;
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -272,6 +295,10 @@ From the words they have saved and the words they keep failing, infer the themes
 
 Estimate CONSERVATIVELY: a deck of a few hundred everyday words is usually HSK 1-2, not higher. When unsure, round DOWN — it is better to underestimate than to overwhelm the learner.
 
+If the message carries a REQUESTED TOPIC, that is what the learner searched for or picked from a category, and it replaces the inference: every query must be about it and "topics" must lead with it. A request written in English, or as a whole question ("what is happening with the trade talks"), becomes natural Chinese search terms — search terms, not a translated sentence. Estimate their level from the profile either way.
+
+START BROAD. The FIRST query must be the requested topic itself in the plainest words it would be searched with — 音乐, not 华语乐坛 新歌发布; 体育, not 中超联赛 第22轮 战报. Narrower angles may follow, but a first query nobody has published anything under today means the learner presses a category and is told there is no news about it, which is almost never true.
+
 Respond with ONLY a JSON object (no markdown fences):
 {
   "hsk": <integer 1-6, your single best estimate>,
@@ -281,24 +308,49 @@ Respond with ONLY a JSON object (no markdown fences):
 }
 Give 2-4 topics and 3-5 concise queries. Prefer Chinese-language queries so the results are Chinese news.`;
 
+// The chips above the search box. Categories are named the way a Chinese news
+// site names its sections, because that is what they are — a browsable front
+// page — and reading 科技 rather than "Technology" is itself a little practice.
+const CATEGORIES_SYSTEM = `You choose the sections of a personalized Chinese news front page for ONE Mandarin learner.
+
+From their flashcard profile, propose ${MAX_CATEGORIES} news categories to offer them as buttons. Mix two kinds:
+- 2-4 drawn from what their saved words show they actually care about (a deck full of 球队、比赛、教练 earns 体育; one full of 房租、工资、市场 earns 财经).
+- The rest the standard sections any Chinese news site has, so there is always somewhere to go: 国际、国内、科技、财经、健康、教育、环境、文化、娱乐、体育.
+
+EVERY CATEGORY MUST BE A SECTION, NOT A SUBJECT. A section is broad enough that a news site publishes something under it most days. The learner's own words tell you which section to offer, never how narrow to make it: a deck of 吉他、乐队、演唱会 earns 娱乐 or 音乐 — never 独立摇滚 or 音乐节筹备. If you are choosing between a subject and the section it belongs to, take the section. A chip that is too specific finds nothing, and being told there is no news about the thing you just pressed is worse than not being offered it.
+
+Each category is:
+- "label": the section name in Simplified Chinese, 2-4 characters, exactly as a Chinese news site would print it. Never a translated English phrase.
+- "pinyin": tone-marked pinyin for the label
+- "english": a 1-3 word English gloss, so a beginner can tell what they are clicking
+- "query": a Chinese web-search query that would find CURRENT news in that section
+
+Put the personalized ones first. No duplicates and no near-synonyms (国际 and 世界 are the same section).
+
+Respond with ONLY a JSON object (no markdown fences):
+{ "categories": [ {"label": "科技", "pinyin": "kē jì", "english": "Technology", "query": "科技 新闻"} ] }`;
+
 // Step 2 (all providers): write the passage from headlines the Worker fetched.
-// News vocabulary is intrinsically hard, so calibration is the whole game —
-// the instructions below bias strongly toward "comprehensible", and the caller
-// passes an explicit TARGET HSK band (see fetchNews) in the user message.
-const NEWS_SYNTH_SYSTEM = `You write a SHORT, easy-to-read Mandarin Chinese news passage for ONE learner, carefully calibrated to their level.
+// The passage is news first and a lesson second: the TARGET HSK band the caller
+// passes (see fetchNews) is a dial the writing leans on, not a ceiling that gets
+// to change what happened. An earlier version of this prompt made calibration
+// "the most important requirement", and it bought readability by flattening the
+// story into something that was no longer really the news.
+const NEWS_SYNTH_SYSTEM = `You write a SHORT Mandarin Chinese news passage for ONE learner, pitched toward their level.
 
 You are given the learner's flashcard profile, a TARGET HSK band, and a list of REAL, CURRENT news headlines/snippets (gathered moments ago) with their sources.
 
 Write ONE original short news digest in Simplified Chinese that tells the learner what is currently happening, drawn from the headlines. Write your own sentences; do not copy headline wording. Ground it ONLY in the provided headlines/snippets — never invent events, names, numbers, or quotes; if a snippet is thin, keep that point general.
 
-CALIBRATION IS THE MOST IMPORTANT REQUIREMENT. News is naturally full of hard, formal vocabulary, so you must actively simplify:
-- Write so a learner at the TARGET HSK band can read comfortably. Use mostly high-frequency words at or below that band.
-- Explain the news in PLAIN, everyday language. Do NOT reuse official, technical, financial, or journalistic phrasing (政策术语、书面官话、专业名词). If an event involves an advanced concept, describe it in simple words or leave it out.
-- Include only a FEW genuinely new "stretch" words — about 5-8 — and define EVERY one of them in the glossary.
-- Keep sentences short and direct. At HSK 1-3, aim for roughly 8-14 characters per sentence and avoid stacked connectives (不仅…而且、虽然…但是…却). At HSK 4+, sentences may be longer.
-- When in doubt, make it EASIER. It is much better to be slightly too easy than too hard.
+THE NEWS COMES FIRST. Say what actually happened, accurately, in Chinese a native speaker would write. The TARGET HSK band is a dial, not a cage: aim at it, but never distort the story, drop the point of it, or write an unnatural sentence in order to hit a level. Some events cannot be told without a hard word — when the right word is above the band, use the right word and gloss it.
 
-Length by TARGET band: HSK 1-2 → about 80-150 Chinese characters; HSK 3-4 → 150-250; HSK 5-6 → 250-400. Keep to 3-5 short paragraphs.
+Aim at the band like this:
+- Where two words say the same thing, take the more common one, and prefer everyday phrasing over official or journalistic phrasing (政策术语、书面官话) that says no more.
+- Keep sentences short and direct. At HSK 1-3 that means roughly 8-16 characters per sentence and few stacked connectives (不仅…而且、虽然…但是…却); at HSK 4+ they may run longer.
+- Put EVERY word the learner is unlikely to know in the glossary — usually about 5-10. A hard word that is explained is a lesson; a hard word that is not is a wall.
+- If a story truly cannot be told without a pile of specialist vocabulary, tell a different one from the headlines instead.
+
+Length by TARGET band: HSK 1-2 → about 100-180 Chinese characters; HSK 3-4 → 180-280; HSK 5-6 → 280-400. Keep to 3-5 short paragraphs.
 
 WRITE NATURAL CHINESE. THIS IS THE MOST IMPORTANT RULE AND IT OUTRANKS EVERYTHING BELOW, INCLUDING THE VOCABULARY INSTRUCTIONS.
 
@@ -320,7 +372,7 @@ Your register model is a 小学 or 初中 语文 textbook passage, or a children
 
 BEFORE YOU ANSWER, REREAD EVERY SENTENCE AND ASK: would a Chinese person say it this way, or does it sound translated? Rewrite every sentence that fails, even if that means dropping one of the learner's vocabulary words. A passage that is slightly off-topic or slightly short but sounds genuinely Chinese is a success; one that hits every target word and reads like a translation is a failure.
 
-BUILD THE PASSAGE FROM THE LEARNER'S OWN VOCABULARY (listed in the message) — a primary goal, after staying at the target level and writing natural Chinese:
+BUILD THE PASSAGE FROM THE LEARNER'S OWN VOCABULARY (listed in the message) — a primary goal, after reporting the news accurately and writing natural Chinese:
 - Words IN THEIR REVIEW QUEUE RIGHT NOW come first. These are the cards they are actively drilling, and meeting one in a real sentence is worth more than any other word in the passage. Work in as many as read naturally — aim for a good handful — but never at the cost of a sentence a native speaker would not write.
 - Reuse the learner's KNOWN words liberally; the passage should feel assembled from words they recognize.
 - Work in some of their RECENTLY SAVED words too, used naturally so they see them in real context.
@@ -410,10 +462,55 @@ function resolveModel(request, env, what) {
   return { env };
 }
 
+// A provider refusing the key is not the same kind of failure as a provider
+// having a bad afternoon, and the learner can only act on one of them. The
+// distinction is carried on the error and ends up as `code` in the response, so
+// a client can say "your API key was rejected" instead of "try again shortly"
+// forever. 401 is a key that is wrong; 403 is a key that is real but not
+// allowed to do this; 429 from the provider is a key over its own quota, which
+// is also about the key rather than about us.
+function providerError(status, message) {
+  const err = new Error(message);
+  err.providerAuth = status === 401 || status === 403;
+  err.providerQuota = status === 429;
+  return err;
+}
+
+// The one shape every model-backed endpoint reports a failed call in.
+function modelFailure(event, err, message) {
+  console.log(JSON.stringify({ event, error: String(err && err.message || err) }));
+  const body = {
+    error: err && err.providerAuth
+      ? 'the AI provider rejected the API key in use — check it in the extension\'s Options page'
+      : err && err.providerQuota
+        ? 'the AI provider says that API key is out of quota — check its billing'
+        : message,
+    detail: String(err && err.message || err).slice(0, 300),
+  };
+  if (err && (err.providerAuth || err.providerQuota)) {
+    body.code = err.providerAuth ? 'provider_auth' : 'provider_quota';
+  }
+  return json(body, 502);
+}
+
 // Turn a system + user prompt into text on whichever provider is configured.
-async function callModel(env, system, prompt) {
+//
+//   images  (optional) [{ mime, data }] the learner attached to the question
+//   search  (optional) let the model look things up on the web. Only the tutor
+//           asks for it, and only OpenAI's Responses API can do it — the search
+//           runs on the provider's side, so there is no tool loop here.
+async function callModel(env, system, prompt, images = [], { search = false } = {}) {
   const provider = providerConfigured(env);
-  if (provider === 'fal') return callFal(env, system, prompt);
+  // fal-ai/any-llm takes a string prompt and nothing else, so an attachment
+  // cannot be sent there. Saying so in the prompt is better than answering as
+  // if the picture were not there: the model can tell the learner.
+  if (provider === 'fal') {
+    const note = images.length
+      ? `${prompt}\n\n(The learner attached ${images.length === 1 ? 'an image' : `${images.length} images`}, `
+        + 'but this server is configured with a model that cannot see images. Say so briefly.)'
+      : prompt;
+    return callFal(env, system, note);
+  }
   if (provider === 'azure') {
     const base = env.AZURE_OPENAI_ENDPOINT.replace(/\/+$/, '');
     const version = env.AZURE_OPENAI_API_VERSION || 'preview';
@@ -422,31 +519,79 @@ async function callModel(env, system, prompt) {
       url: `${base}/openai/v1/responses?api-version=${version}`,
       headers: { 'api-key': env.AZURE_OPENAI_KEY },
       model: env.AZURE_OPENAI_DEPLOYMENT,
-    }, system, prompt);
+    }, system, prompt, images, { search });
   }
   return callOpenAIText({
     label: 'openai',
     url: 'https://api.openai.com/v1/responses',
     headers: { authorization: `Bearer ${env.OPENAI_API_KEY}` },
     model: env.OPENAI_MODEL || 'gpt-4o',
-  }, system, prompt);
+  }, system, prompt, images, { search });
 }
 
-// OpenAI / Azure OpenAI Responses API, plain text (no tools).
-async function callOpenAIText(cfg, system, user) {
+// The built-in web-search tool has been spelled two ways across versions of the
+// Responses API, and a deployment may be on a model that has neither. Rather
+// than pin a name and have questions fail on somebody else's account, offer
+// each in turn and then go without: an answer from training beats a 502.
+const WEB_SEARCH_TOOLS = [[{ type: 'web_search' }], [{ type: 'web_search_preview' }], null];
+
+// Does this look like the provider refusing the tool, rather than refusing us?
+// Only then is retrying without it the right move; a bad key must still fail.
+function toolRejected(err) {
+  return !err?.providerAuth && !err?.providerQuota
+    && /\b(400|404|422)\b/.test(String(err?.message || ''))
+    && /tool|web_search|unsupported|not supported/i.test(String(err?.message || ''));
+}
+
+// OpenAI / Azure OpenAI Responses API. With attachments the input becomes one
+// user message of parts, which is the only shape the Responses API takes an
+// image in; with `search` the model may call the provider's own web search
+// before it answers, and only the final message comes back to us.
+async function callOpenAIText(cfg, system, user, images = [], { search = false } = {}) {
+  if (!search) return responsesCall(cfg, system, user, images, null);
+  let lastErr;
+  for (const tools of WEB_SEARCH_TOOLS) {
+    try {
+      return await responsesCall(cfg, system, user, images, tools);
+    } catch (err) {
+      if (!toolRejected(err)) throw err;
+      lastErr = err;
+      console.log(JSON.stringify({
+        event: 'web_search_unavailable', tool: tools?.[0]?.type || 'none',
+        error: String(err.message).slice(0, 200),
+      }));
+    }
+  }
+  throw lastErr;
+}
+
+async function responsesCall(cfg, system, user, images, tools) {
+  const input = images.length
+    ? [{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: user },
+        ...images.map((img) => ({
+          type: 'input_image',
+          image_url: `data:${img.mime};base64,${img.data}`,
+        })),
+      ],
+    }]
+    : user;
   const res = await fetch(cfg.url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...cfg.headers },
     body: JSON.stringify({
       model: cfg.model,
       instructions: system,
-      input: user,
+      input,
       max_output_tokens: 16000,
+      ...(tools ? { tools } : {}),
     }),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new Error(`${cfg.label} ${res.status}: ${detail.slice(0, 300)}`);
+    throw providerError(res.status, `${cfg.label} ${res.status}: ${detail.slice(0, 300)}`);
   }
   const data = await res.json();
   if (typeof data.output_text === 'string' && data.output_text) return data.output_text;
@@ -474,7 +619,7 @@ async function callFal(env, systemPrompt, prompt) {
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new Error(`fal ${res.status}: ${detail.slice(0, 300)}`);
+    throw providerError(res.status, `fal ${res.status}: ${detail.slice(0, 300)}`);
   }
   const data = await res.json();
   if (data && data.error) throw new Error(`fal: ${String(data.error).slice(0, 200)}`);
@@ -586,7 +731,11 @@ const RELIABLE_FEEDS = [
   'https://rss.dw.com/rdf/rss-chi-all',
 ];
 
-async function gatherNews(queries) {
+// `fallback` is off for a topic the learner asked for by name: today's top
+// stories are a fine answer to "write me something", but answering a search for
+// 环境 with whatever is on the front page would put their topic on a passage
+// about something else. Better to come back empty and say so.
+async function gatherNews(queries, { fallback = true } = {}) {
   const seen = new Set();
   const out = [];
   const take = (items) => {
@@ -601,6 +750,7 @@ async function gatherNews(queries) {
   // not the sum — then merge in query order.
   const perQuery = await Promise.all(queries.slice(0, MAX_QUERIES).map(fetchNewsQuery));
   for (const items of perQuery) take(items);
+  if (!fallback) return out;
   // Topical search found nothing — fall back to Google top stories, then to
   // major Chinese feeds if Google is blocked at this colo.
   if (out.length === 0) take(await fetchTopStories());
@@ -626,14 +776,23 @@ function estimateHsk(plan) {
 // them. Sources are always the real articles used, never model-authored URLs.
 // `difficulty` shifts the target band down/up from the learner's estimate so
 // they can tune it (news vocabulary runs hard, so the default sits AT level).
-async function fetchNews(profile, env, difficulty = 'normal') {
+// `topic` — a category chip or something they typed into the search box —
+// replaces the inferred themes; without one the profile still picks them.
+async function fetchNews(profile, env, difficulty = 'normal', topic = null) {
   // 1. Plan the search + estimate the level from the learner's vocabulary.
-  const plan = extractJson(await callModel(env, TOPICS_SYSTEM, `Learner profile:\n${JSON.stringify(profile)}`));
+  const ask = `Learner profile:\n${JSON.stringify(profile)}`
+    + (topic ? `\n\nREQUESTED TOPIC: ${topic.label}${topic.query && topic.query !== topic.label ? `\nA search query for it: ${topic.query}` : ''}` : '');
+  const plan = extractJson(await callModel(env, TOPICS_SYSTEM, ask));
   const level = typeof plan.level === 'string' ? plan.level : '';
-  const topics = (Array.isArray(plan.topics) ? plan.topics : [])
-    .filter((t) => typeof t === 'string').slice(0, MAX_TOPICS);
+  const planTopics = (Array.isArray(plan.topics) ? plan.topics : [])
+    .filter((t) => typeof t === 'string');
+  // What they asked for leads the chips, whatever the planner decided to call it.
+  const topics = [...new Set(topic ? [topic.label, ...planTopics] : planTopics)].slice(0, MAX_TOPICS);
   const queries = (Array.isArray(plan.queries) ? plan.queries : [])
     .filter((t) => typeof t === 'string' && t.trim()).slice(0, MAX_QUERIES);
+  // A planner that returns nothing is fatal for an inferred search — there is
+  // nothing to look for. A requested topic is already a search term.
+  if (queries.length === 0 && topic) queries.push(topic.query || topic.label);
   if (queries.length === 0) throw new Error('model produced no search queries');
 
   const estimated = estimateHsk(plan);
@@ -641,8 +800,21 @@ async function fetchNews(profile, env, difficulty = 'normal') {
   const target = clampHsk(estimated + delta);
 
   // 2. Fetch real, current headlines (keyless Google News RSS).
-  const items = await gatherNews(queries);
-  if (items.length === 0) throw new Error('no current news found for these topics');
+  let items = await gatherNews(queries, { fallback: !topic });
+  // Pressing 音乐 and being told there is no music news is absurd, and it was
+  // not the category's fault: the planner had narrowed it to something like
+  // 华语乐坛 新歌发布, which genuinely has nothing on it today. Before giving up
+  // on a topic, ask for the topic itself — the plain words the learner pressed
+  // or typed, which is the broadest form of what they asked for.
+  if (items.length === 0 && topic) {
+    const plain = [...new Set([topic.label, topic.query, `${topic.label} 新闻`])];
+    items = await gatherNews(plain.filter((q) => !queries.includes(q)), { fallback: false });
+  }
+  if (items.length === 0) {
+    throw new Error(topic
+      ? `no current news found for “${topic.label}” — try another topic, or Generate today's news`
+      : 'no current news found for these topics');
+  }
 
   // 3. Synthesize the passage from those headlines, at the target band.
   const headlines = items
@@ -656,9 +828,18 @@ async function fetchNews(profile, env, difficulty = 'normal') {
     + `- Known words (reuse liberally): ${list(profile.knownWords)}\n`
     + `- Recently saved (weave in naturally): ${list(profile.recentWords)}\n`
     + `- Struggling with (include a few in clear, simple contexts): ${list(profile.strugglingWords)}`;
+  // A requested topic is stated as what the passage is FOR, not as one more
+  // hint: the headlines came back from a topical search, but a broad search
+  // ("科技") still returns stories that only glance at it.
+  const wanted = topic
+    ? `THE LEARNER ASKED FOR NEWS ABOUT: ${topic.label}\n`
+      + 'Write about that. Use the headlines below that bear on it and ignore the rest; '
+      + 'if only a few do, write a shorter passage about those rather than padding it out '
+      + 'with unrelated stories, and never invent news about the topic.\n\n'
+    : '';
   const prompt = `TARGET HSK band: ${target} (write for a HSK ${target} reader; difficulty preference: ${difficulty}).\n`
     + `Learner's estimated level: ${level || `HSK ${estimated}`}\n\n`
-    + `${vocabBlock}\n\nTopics: ${topics.join(', ') || 'general'}\n\nCurrent news items:\n${headlines}`;
+    + `${wanted}${vocabBlock}\n\nTopics: ${topics.join(', ') || 'general'}\n\nCurrent news items:\n${headlines}`;
   const digest = sanitizeNews({
     ...extractJson(await callModel(env, NEWS_SYNTH_SYSTEM, prompt)),
     level: level || `HSK ${estimated}`,
@@ -667,6 +848,9 @@ async function fetchNews(profile, env, difficulty = 'normal') {
   });
   digest.targetHsk = target;
   digest.difficulty = difficulty;
+  // Echoed back so the client can label the article, group its history by what
+  // was asked for, and tell whether the cache it just got matches the request.
+  digest.topic = topic;
   if (!digest.article) throw new Error('model returned no article');
   return digest;
 }
@@ -713,6 +897,7 @@ async function handleNews(request, env) {
     return json({ error: 'missing profile' }, 400);
   }
   const difficulty = ['easier', 'normal', 'harder'].includes(body.difficulty) ? body.difficulty : 'normal';
+  const topic = readTopic(body.topic);
   const profileJson = JSON.stringify(profile);
   if (profileJson.length > MAX_PROFILE_BYTES) return json({ error: 'profile too large' }, 413);
 
@@ -728,26 +913,45 @@ async function handleNews(request, env) {
     .first();
   const cachedDoc = cached ? JSON.parse(cached.doc) : null;
   const age = cached ? now - cached.created_at : Infinity;
-  const sameDifficulty = cachedDoc && (cachedDoc.difficulty || 'normal') === difficulty;
+  // The cache only answers the question it was asked. A different topic — or a
+  // different difficulty — is a different article, so it regenerates even
+  // inside the anti-spam floor.
+  const sameRequest = cachedDoc
+    && (cachedDoc.difficulty || 'normal') === difficulty
+    && (cachedDoc.topic?.label || '') === (topic?.label || '');
   // Normal (non-forced) loads show the last digest within the TTL — never spend
   // on a tab open. A forced refresh regenerates, except within the short
-  // anti-spam floor when the difficulty is unchanged (so changing difficulty
-  // always re-generates right away).
-  if (cachedDoc && ((!body.force && age < NEWS_TTL_MS) || (age < NEWS_MIN_INTERVAL_MS && sameDifficulty))) {
+  // anti-spam floor.
+  if (sameRequest && ((!body.force && age < NEWS_TTL_MS) || age < NEWS_MIN_INTERVAL_MS)) {
     return json({ ...cachedDoc, generatedAt: cached.created_at, cached: true });
+  }
+
+  // Every article the learner keeps is a fresh call now (they archive rather
+  // than replace one another), so the endpoint needs a ceiling of its own.
+  await ensureUsageLog(db);
+  if (await usageLastHour(db, user.id, 'news', now) >= NEWS_PER_HOUR) {
+    return json({
+      error: `article limit reached (${NEWS_PER_HOUR} per hour); your past articles are still here`,
+    }, 429);
   }
 
   let digest;
   try {
-    digest = await fetchNews(profile, model.env, difficulty);
+    digest = await fetchNews(profile, model.env, difficulty, topic);
   } catch (err) {
-    console.log(JSON.stringify({ event: 'news_error', error: String(err && err.message || err) }));
-    if (cachedDoc) {
+    // A rejected key is worth saying out loud even when there is a cached
+    // digest to fall back on — silently serving yesterday's passage is how a
+    // key stays broken for a week. A failed *topic* search gets the error too:
+    // the last article is not an answer to "show me 环境", and the client keeps
+    // its own archive to fall back on.
+    if (cachedDoc && !topic && !err.providerAuth && !err.providerQuota) {
+      console.log(JSON.stringify({ event: 'news_error', error: String(err && err.message || err) }));
       return json({ ...cachedDoc, generatedAt: cached.created_at, cached: true, stale: true });
     }
-    return json({ error: 'could not generate your news digest; try again later', detail: String(err && err.message || err).slice(0, 300) }, 502);
+    return modelFailure('news_error', err, 'could not generate your news digest; try again later');
   }
 
+  await recordUsage(db, user.id, 'news', now);
   await db
     .prepare(
       `INSERT INTO news (user_id, doc, profile_hash, created_at) VALUES (?, ?, ?, ?)
@@ -757,6 +961,87 @@ async function handleNews(request, env) {
     .bind(user.id, JSON.stringify(digest), await sha256Hex(profileJson), now)
     .run();
   return json({ ...digest, generatedAt: now, cached: false });
+}
+
+// POST /api/news/categories { profile } -> { categories: [{label, pinyin, english, query}] }
+//
+// The sections offered above the search box. Cheap next to a digest, and the
+// client keeps them for a week, so this is called about once per learner per
+// week rather than once per article.
+async function handleNewsCategories(request, env) {
+  const token = bearerToken(request);
+  if (!token) return json({ error: 'missing or malformed bearer token' }, 401);
+  const model = resolveModel(request, env, 'Topic suggestions');
+  if (model.error) return model.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'invalid JSON' }, 400);
+  }
+  const profile = body.profile;
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+    return json({ error: 'missing profile' }, 400);
+  }
+  const profileJson = JSON.stringify(profile);
+  if (profileJson.length > MAX_PROFILE_BYTES) return json({ error: 'profile too large' }, 413);
+
+  const now = Date.now();
+  const db = env.DB;
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const user = await getUser(db, await sha256Hex(token), ip, now);
+  if (!user) return json({ error: 'too many new pairings from this address; try later' }, 429);
+
+  await ensureUsageLog(db);
+  if (await usageLastHour(db, user.id, 'news_topics', now) >= CATEGORIES_PER_HOUR) {
+    return json({ error: `topic suggestions limited to ${CATEGORIES_PER_HOUR} per hour` }, 429);
+  }
+
+  let categories;
+  try {
+    const parsed = extractJson(await callModel(model.env, CATEGORIES_SYSTEM, `Learner profile:\n${profileJson}`));
+    categories = sanitizeCategories(parsed);
+  } catch (err) {
+    return modelFailure('news_topics_error', err, 'could not suggest topics right now; try again shortly');
+  }
+  if (!categories.length) return json({ error: 'the model suggested no usable topics' }, 502);
+
+  await recordUsage(db, user.id, 'news_topics', now);
+  return json({ categories, generatedAt: now });
+}
+
+// A category chip, or whatever the learner typed into the search box. `query`
+// is the model's Chinese search phrasing for a chip; for typed text the label
+// is the query, since that is all we have until the planner rewrites it.
+function readTopic(value) {
+  const raw = typeof value === 'string' ? { label: value } : (value && typeof value === 'object' ? value : null);
+  if (!raw) return null;
+  const label = typeof raw.label === 'string' ? raw.label.slice(0, MAX_TOPIC_CHARS).trim() : '';
+  if (!label) return null;
+  const query = typeof raw.query === 'string' && raw.query.trim()
+    ? raw.query.slice(0, MAX_TOPIC_CHARS).trim() : label;
+  const english = typeof raw.english === 'string' ? raw.english.slice(0, MAX_TOPIC_CHARS).trim() : '';
+  return english ? { label, query, english } : { label, query };
+}
+
+function sanitizeCategories(parsed) {
+  const str = (v, max) => (typeof v === 'string' ? v.slice(0, max).trim() : '');
+  const seen = new Set();
+  return (Array.isArray(parsed.categories) ? parsed.categories : [])
+    .filter((c) => c && typeof c === 'object')
+    .map((c) => ({
+      label: str(c.label, MAX_TOPIC_CHARS),
+      pinyin: str(c.pinyin, 120),
+      english: str(c.english, 60),
+      query: str(c.query, MAX_TOPIC_CHARS) || str(c.label, MAX_TOPIC_CHARS),
+    }))
+    .filter((c) => {
+      if (!c.label || seen.has(c.label)) return false;
+      seen.add(c.label);
+      return true;
+    })
+    .slice(0, MAX_CATEGORIES);
 }
 
 // ---------------------------------------------------------------------------
@@ -770,10 +1055,15 @@ Rules:
 - Answer in English. Write Chinese in Simplified, and give pinyin in parentheses the first time a word appears.
 - If the learner highlighted something, that highlight is what they are pointing at. Answer about THAT specific text, and quote the relevant few characters back so it is clear what you are explaining.
 - On a flashcard, the most useful answer is usually about USAGE: when a native speaker would reach for this word, what it collocates with, and how it differs from the near synonym the learner probably already knows. Do not just restate the dictionary gloss they can already see.
-- Be short and concrete: two to six sentences, or a few short lines. No preamble, no "great question", no summary of what you are about to say.
+- Let the question set the length. Most deserve two to six sentences; a small one deserves a line. But when the learner asks for a story, a passage, a set of examples, a walk through a grammar point, or anything about an image they sent, write as much as the answer actually needs — a cramped answer to a real question is worse than a long one. Never pad to reach a length.
+- No preamble, no "great question", no summary of what you are about to say. Every sentence carries something.
 - For a grammar question: name the pattern, give ONE minimal example sentence, and state the single mistake learners most often make with it.
 - For a vocabulary question: give the meaning, the register (spoken/written/formal), and a near-synonym contrast if one matters.
-- Stay at or near the learner's level. Do not introduce advanced vocabulary to explain a beginner point.
+- THE MESSAGE TELLS YOU WHO YOU ARE TALKING TO: their HSK level and the words in their deck — what they are drilling this week, what they reliably know, what they keep failing. Follow it. Explain at that level, build your example sentences out of words they already know, and prefer a word from their review queue over a fresh one when either would do: meeting their own word in a new sentence is worth more than meeting a stranger. When the answer needs a word above their level, use it and gloss it rather than talking around it.
+- If the word they are asking about is one the message lists as giving them trouble, treat it as such: say what usually trips people up about it, and anchor it to something on their known list.
+- Never mention the profile, the lists, or the level itself. Do not say "since you are HSK 3" or "I see you have saved 200 words". Just answer that way.
+- If the learner attached an image — a sign, a menu, a screenshot, a page of a book — read the Chinese in it and answer about that. Transcribe the characters you are talking about so they can be looked up, and say plainly if part of it is too blurry or cropped to read rather than guessing at it.
+- You can search the web, and should when the answer depends on something you cannot know from training: current events, a song or show or person they name, a place, slang that may have moved on, or anything they explicitly ask you to look up. Search, then answer as a tutor — in the shape the rules above ask for, at their level — rather than reporting what you found. Name the source in a few words when the fact is the point. Do not search for ordinary grammar and vocabulary questions; you already know those, and a search is slower and no better.
 - Never invent a word, a character, or a usage. If you are not sure, say you are not sure.
 - Plain text only. No markdown, no asterisks, no headings, no numbered lists with special formatting — just sentences and, at most, short lines separated by newlines.`;
 
@@ -810,12 +1100,104 @@ function askText(value, max) {
   return typeof value === 'string' ? value.slice(0, max).trim() : '';
 }
 
+// Images the learner attached to the question — a photo of a menu, a sign, a
+// screenshot of a sentence they hit somewhere else. The client shrinks them
+// before sending (a pasted screenshot is easily 4MB), so these caps are a
+// backstop against a caller that does not, not the working size.
+const ASK_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const MAX_ASK_IMAGES = 3;
+const MAX_IMAGE_BASE64 = 1_600_000; // ~1.2MB of pixels each
+
+// Returns { images } or { error } — a bad attachment is worth saying out loud
+// rather than dropping silently, since the learner can see they attached it.
+function askImages(body) {
+  const raw = Array.isArray(body.images) ? body.images : [];
+  if (!raw.length) return { images: [] };
+  if (raw.length > MAX_ASK_IMAGES) {
+    return { error: json({ error: `at most ${MAX_ASK_IMAGES} images per question` }, 400) };
+  }
+  const images = [];
+  for (const item of raw) {
+    const mime = item && typeof item.mime === 'string' ? item.mime.toLowerCase() : '';
+    const data = item && typeof item.data === 'string' ? item.data : '';
+    if (!ASK_IMAGE_TYPES.has(mime)) {
+      return { error: json({ error: `unsupported image type "${mime.slice(0, 40)}"` }, 400) };
+    }
+    if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) {
+      return { error: json({ error: 'image data must be base64' }, 400) };
+    }
+    if (data.length > MAX_IMAGE_BASE64) return { error: json({ error: 'image too large' }, 413) };
+    images.push({ mime, data });
+  }
+  return { images };
+}
+
+// Who the tutor is talking to.
+//
+// A tutor that does not know what you are studying can only answer in general,
+// and a general answer to "how is this used?" is a dictionary with a friendlier
+// voice. The client sends the same deck snapshot the news digest is built from
+// (extension/lib/profile.js) plus the level the app has them at, so an answer
+// can be pitched at that level and built out of words they already hold.
+//
+// Everything here is clamped rather than trusted: these lists are drawn from a
+// deck that can be any size, and they are going into a prompt.
+const MAX_ASK_WORDS = 40;   // per list
+const MAX_WORD_CHARS = 24;
+
+function wordList(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter((w) => typeof w === 'string' && w.trim())
+    .slice(0, MAX_ASK_WORDS)
+    .map((w) => w.trim().slice(0, MAX_WORD_CHARS));
+}
+
+function learnerBlock(body) {
+  const profile = body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile)
+    ? body.profile : null;
+  if (!profile) return '';
+  const lines = [];
+  const level = Number(profile.hskLevel);
+  if (Number.isInteger(level) && level >= 1 && level <= 9) {
+    lines.push(`- Working at about HSK ${level}.`);
+  }
+  const placed = profile.placement && typeof profile.placement === 'object'
+    ? profile.placement : null;
+  if (placed && Number.isInteger(Number(placed.level))) {
+    // The interview is a measurement rather than a guess, so it is worth
+    // stating separately from the level the app is currently teaching at.
+    lines.push(`- A placement interview put them at HSK ${Number(placed.level)}`
+      + `${askText(placed.summary, 300) ? `: ${askText(placed.summary, 300)}` : '.'}`);
+  }
+  const counts = [];
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  if (num(profile.savedWords) !== null) counts.push(`${num(profile.savedWords)} words saved`);
+  if (num(profile.reviewedWords) !== null) counts.push(`${num(profile.reviewedWords)} in review`);
+  if (num(profile.matureWords) !== null) counts.push(`${num(profile.matureWords)} of those well established`);
+  if (counts.length) lines.push(`- Deck: ${counts.join(', ')}.`);
+
+  const say = (label, words) => {
+    const list = wordList(words);
+    if (list.length) lines.push(`- ${label}: ${list.join('、')}`);
+  };
+  say('Drilling this week (prefer these in examples)', profile.studyingWords);
+  say('Knows reliably (safe to build sentences from)', profile.knownWords);
+  say('Keeps failing', profile.strugglingWords);
+  say('Saved most recently', profile.recentWords);
+
+  return lines.length ? `Who you are talking to:\n${lines.join('\n')}` : '';
+}
+
 // The guide the learner is on, the part they highlighted, and the last few
 // turns — enough for follow-ups like "and the second one?" without shipping
 // the whole conversation every time.
 function buildAskPrompt(body) {
   const context = body.context && typeof body.context === 'object' ? body.context : {};
   const parts = [];
+  // First, because it colours every other line: the level and the deck decide
+  // what the answer may be built out of.
+  const learner = learnerBlock(body);
+  if (learner) parts.push(learner);
   const level = Number(context.level);
   if (Number.isInteger(level) && level >= 1 && level <= 9) {
     parts.push(`The learner is reading the HSK ${level} study guide.`);
@@ -838,6 +1220,16 @@ function buildAskPrompt(body) {
     .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
     .map((m) => `${m.role === 'user' ? 'Learner' : 'You'}: ${m.content.slice(0, MAX_HISTORY_CHARS)}`);
   if (history.length) parts.push(`Earlier in this conversation:\n${history.join('\n')}`);
+  const attachedCount = Array.isArray(body.images) ? body.images.length : 0;
+  if (attachedCount) {
+    const noun = attachedCount === 1 ? 'an image' : `${attachedCount} images`;
+    // A picture stays in the conversation, so it arrives again with follow-up
+    // questions. Saying which it is stops the model from announcing a new
+    // photograph every turn.
+    parts.push(body.imagesFromEarlier
+      ? `The learner sent ${noun} earlier in this conversation; ${attachedCount === 1 ? 'it is' : 'they are'} attached again below, and the question is probably still about ${attachedCount === 1 ? 'it' : 'them'}.`
+      : `The learner attached ${noun} with this question; ${attachedCount === 1 ? 'it follows' : 'they follow'}.`);
+  }
   parts.push(`Question: ${askText(body.question, MAX_QUESTION_CHARS)}`);
   return parts.join('\n\n');
 }
@@ -856,6 +1248,8 @@ async function handleAsk(request, env) {
   }
   const question = askText(body.question, MAX_QUESTION_CHARS);
   if (!question) return json({ error: 'missing question' }, 400);
+  const attached = askImages(body);
+  if (attached.error) return attached.error;
 
   const now = Date.now();
   const db = env.DB;
@@ -871,17 +1265,26 @@ async function handleAsk(request, env) {
 
   let answer;
   try {
-    answer = await callModel(model.env, ASK_SYSTEM, buildAskPrompt(body));
+    // The tutor is the one endpoint that gets to look things up: a question
+    // about a song, a place or something in this week's news is one a learner
+    // will actually ask, and "I cannot know that" is a worse answer than a
+    // search. Deployments can switch it off with ASK_WEB_SEARCH=false.
+    answer = await callModel(model.env, ASK_SYSTEM, buildAskPrompt(body), attached.images,
+      { search: String(env.ASK_WEB_SEARCH) !== 'false' });
   } catch (err) {
-    console.log(JSON.stringify({ event: 'ask_error', error: String(err && err.message || err) }));
-    return json({
-      error: 'could not answer that right now; try again shortly',
-      detail: String(err && err.message || err).slice(0, 300),
-    }, 502);
+    return modelFailure('ask_error', err, 'could not answer that right now; try again shortly');
   }
 
   await recordUsage(db, user.id, 'ask', now);
-  return json({ answer: String(answer).slice(0, MAX_ANSWER_CHARS).trim(), generatedAt: now });
+  // `sawImages` is how the extension can tell a Worker that took the pictures
+  // from one deployed before pictures existed, which accepts them and silently
+  // drops them — leaving the model to say, correctly and uselessly, that it
+  // cannot see any image.
+  return json({
+    answer: String(answer).slice(0, MAX_ANSWER_CHARS).trim(),
+    sawImages: attached.images.length,
+    generatedAt: now,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -936,11 +1339,7 @@ async function handleTranslate(request, env) {
   try {
     parsed = extractJson(await callModel(model.env, TRANSLATE_SYSTEM, text));
   } catch (err) {
-    console.log(JSON.stringify({ event: 'translate_error', error: String(err && err.message || err) }));
-    return json({
-      error: 'could not translate that right now; try again shortly',
-      detail: String(err && err.message || err).slice(0, 300),
-    }, 502);
+    return modelFailure('translate_error', err, 'could not translate that right now; try again shortly');
   }
 
   const clean = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, MAX_TRANSLATION_CHARS);
@@ -953,13 +1352,241 @@ async function handleTranslate(request, env) {
   return json({ translation, literal: clean(parsed.literal), generatedAt: now });
 }
 
+// ---------------------------------------------------------------------------
+// The placement interview
+// ---------------------------------------------------------------------------
+
+const PLACEMENT_SYSTEM = `You are a Mandarin examiner running a spoken-style placement interview in text. The learner types their replies. You conduct the interview one turn at a time: you mark the reply they just gave, then set the next task.
+
+The interview is adaptive, and the client owns the ladder. It tells you which HSK levels this turn may be aimed at — usually a suggested level and the one either side of it — and gives you the published descriptors for each. You may pick any level from that list and no other. Pick it AFTER marking the reply below: take the suggested level unless that reply clearly says otherwise, step up if they handled the last task easily, step down if it defeated them. Never go outside the list, even if you think the right level is elsewhere; a level missing from it has already been ruled out or already been asked about enough.
+
+WRITING THE TASK
+- Write it in Mandarin, pitched at the level you picked. One task per turn, two or three sentences at most.
+- Vary what you ask for across the interview: answer a question about their life, react to a situation, retell something you just said, explain a preference and why, translate one short English sentence, or complete a sentence you start. Do not ask the same kind of thing twice in a row.
+- Levels 1-2 may carry a short English gloss in brackets after the Chinese. Level 3 and up must be Chinese only — reading the question is part of the test.
+- Lean on words the learner's deck says they know, so a stumble is about the level and not about one unlucky word. Where the deck lists words they keep failing, work one in when it fits naturally.
+- Never say what level you are testing, never give a score, never praise or correct mid-interview. Marking is invisible to them until the end. Just react briefly and naturally, then ask the next thing.
+- Never answer your own question or model the reply you want.
+
+MARKING THE PREVIOUS ANSWER
+- comprehension 0-3: did they understand what was asked? 0 no reply or clearly did not understand, 1 caught the topic only, 2 understood with effort or one misreading, 3 understood fully.
+- production 0-3: was the Chinese they wrote accurate and natural for the TARGET LEVEL? 0 no usable Chinese (blank, English only, "I don't know"), 1 isolated words or heavy errors, 2 gets the meaning across with errors below this level's standard, 3 accurate and natural at this level.
+- Mark against the target level, not against a native speaker. A perfectly good HSK 2 answer to an HSK 5 task is a low production mark at 5 — that is the measurement working, not harshness.
+- Answering in English, in pinyin, or with "I don't know" is real evidence: mark production 0 and say so in the comment. Do not award marks for effort.
+- errors: up to three concrete ones. Quote the learner's own words in "span", give the corrected Chinese in "correction", and say what the rule is in one short English clause. Only real errors — do not invent them to look thorough, and do not list stylistic preferences as errors.
+- comment: one short English sentence the learner will read afterwards. Specific, not "good job".
+
+THE FINAL TURN
+When told this is the final turn, add a "result" object summarizing the whole interview: what they can reliably do, where it came apart, and what to work on. Base it on the transcript in front of you. Do not state an overall HSK level number in any text — the client computes that from your marks, and a second number that disagrees with it is worse than no number.
+
+Respond with ONLY a JSON object (no markdown fences):
+{
+  "level": 1-9, the level you picked for the task, from the allowed list
+  "reply": "what you say next, in Mandarin (plus a bracketed English gloss only at levels 1-2)",
+  "taskType": "question | situation | retell | translate | complete | wind-down",
+  "assess": null,
+  "result": null
+}
+"assess" is null on the opening turn only; on every other turn it is
+{ "comprehension": 0-3, "production": 0-3, "errors": [{ "span": "", "correction": "", "note": "" }], "vocabUsed": [""], "comment": "" }
+"result" is null except on the final turn, where it is
+{ "summary": "2-3 English sentences", "strengths": [""], "gaps": [""], "advice": [""] }`;
+
+const MAX_PLACEMENT_HISTORY = 26;      // messages of transcript sent back
+const MAX_PLACEMENT_MESSAGE = 1200;    // one turn of it
+const MAX_PLACEMENT_ANSWER = 2000;     // what the learner just typed
+const MAX_PLACEMENT_REPLY = 600;
+const MAX_PLACEMENT_ERRORS = 3;
+const MAX_PLACEMENT_RUBRIC_BYTES = 8 * 1024;
+
+// The rubrics, the deck, the transcript, and which levels this turn may be
+// aimed at. The rubrics travel from the client because the guides — the app's
+// copy of the published standard — live in the extension, and rating against
+// the same descriptors the learner can go and read is the whole point of
+// sending them.
+function buildPlacementPrompt(body, allowed) {
+  const parts = [];
+  const target = Number(body.target);
+  const rubrics = (Array.isArray(body.rubrics) ? body.rubrics : [])
+    .filter((r) => r && typeof r === 'object' && allowed.includes(Number(r.level)));
+
+  parts.push(allowed.length > 1
+    ? `Allowed levels for this turn: ${allowed.join(', ')}. Suggested: HSK ${target}.`
+    : `This turn must be aimed at HSK ${target}.`);
+
+  for (const rubric of rubrics) {
+    const lines = [];
+    if (Array.isArray(rubric.canDo)) {
+      lines.push(`At this level a learner can:\n- ${rubric.canDo.slice(0, 8).join('\n- ')}`);
+    }
+    if (Array.isArray(rubric.grammar)) {
+      lines.push(`Grammar introduced at this level:\n- ${rubric.grammar.slice(0, 14).join('\n- ')}`);
+    }
+    if (Array.isArray(rubric.vocab)) {
+      lines.push(`Representative vocabulary: ${rubric.vocab.slice(0, 60).join('、')}`);
+    }
+    parts.push(`RUBRIC FOR HSK ${Number(rubric.level)}\n${lines.join('\n\n')}`);
+  }
+
+  const profile = body.profile && typeof body.profile === 'object' ? body.profile : null;
+  if (profile) {
+    parts.push('The learner\'s flashcard deck, for pitching the task — not for marking:\n'
+      + `${JSON.stringify(profile)}`);
+  }
+
+  const history = (Array.isArray(body.history) ? body.history : [])
+    .slice(-MAX_PLACEMENT_HISTORY)
+    .filter((m) => m && typeof m.content === 'string'
+      && (m.role === 'examiner' || m.role === 'learner'))
+    .map((m) => `${m.role === 'learner' ? 'Learner' : 'You'}: ${m.content.slice(0, MAX_PLACEMENT_MESSAGE)}`);
+  if (history.length) parts.push(`The interview so far:\n${history.join('\n')}`);
+
+  const answer = askText(body.answer, MAX_PLACEMENT_ANSWER);
+  if (answer) {
+    parts.push(`THE LEARNER'S REPLY TO YOUR LAST TASK — mark this one:\n"""\n${answer}\n"""`);
+    parts.push(`Their reply was to a task aimed at HSK ${Number(body.answeredLevel) || target}. Mark it against THAT level.`);
+  } else if (history.length) {
+    // A turn arriving with an empty answer is a learner who pressed send with
+    // nothing in the box, or skipped. That is a mark of zero, not a missing
+    // measurement — saying so here stops the model marking the void generously.
+    parts.push('The learner sent no reply to your last task. Mark comprehension 0 and production 0.');
+  }
+
+  if (body.finish) {
+    parts.push('THIS IS THE FINAL TURN. Mark the reply above, then close the interview warmly in '
+      + 'one or two sentences and fill in "result". Do not set another task.');
+  } else if (!history.length) {
+    parts.push('This is the opening turn. There is nothing to mark yet, so "assess" is null. '
+      + 'Greet them in one short line and set the first task.');
+  }
+  return parts.join('\n\n');
+}
+
+const clampMark = (value) => Math.min(3, Math.max(0, Math.round(Number(value)) || 0));
+
+// The model is marking, so its numbers are taken as given — but the shapes are
+// not. A mark that arrives as "3/3", an errors array of 40 items, or a result
+// object on a turn that is not the last one would all end up stored in the
+// learner's history and charted, so each is coerced or dropped here.
+function cleanAssess(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const errors = (Array.isArray(raw.errors) ? raw.errors : [])
+    .slice(0, MAX_PLACEMENT_ERRORS)
+    .map((e) => ({
+      span: askText(e && e.span, 120),
+      correction: askText(e && e.correction, 200),
+      note: askText(e && e.note, 200),
+    }))
+    .filter((e) => e.span || e.correction);
+  return {
+    comprehension: clampMark(raw.comprehension),
+    production: clampMark(raw.production),
+    errors,
+    vocabUsed: (Array.isArray(raw.vocabUsed) ? raw.vocabUsed : [])
+      .slice(0, 12).map((w) => askText(w, 20)).filter(Boolean),
+    comment: askText(raw.comment, 300),
+  };
+}
+
+function cleanResult(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const list = (value) => (Array.isArray(value) ? value : [])
+    .slice(0, 5).map((s) => askText(s, 220)).filter(Boolean);
+  return {
+    summary: askText(raw.summary, 700),
+    strengths: list(raw.strengths),
+    gaps: list(raw.gaps),
+    advice: list(raw.advice),
+  };
+}
+
+// POST /api/placement -> { reply, taskType, assess, result }
+async function handlePlacement(request, env) {
+  const token = bearerToken(request);
+  if (!token) return json({ error: 'missing or malformed bearer token' }, 401);
+  const model = resolveModel(request, env, 'The placement interview');
+  if (model.error) return model.error;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'invalid JSON' }, 400);
+  }
+  const target = Number(body.target);
+  if (!Number.isInteger(target) || target < 1 || target > 9) {
+    return json({ error: 'target must be an HSK level, 1 to 9' }, 400);
+  }
+  // The band the client's ladder will accept back. The suggestion is always in
+  // it, so a client that sends no band still gets a working turn.
+  const allowed = [...new Set([target, ...(Array.isArray(body.allowed) ? body.allowed : [])]
+    .map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 9))].sort();
+  if (JSON.stringify(body.rubrics || null).length > MAX_PLACEMENT_RUBRIC_BYTES) {
+    return json({ error: 'rubrics too large' }, 413);
+  }
+  if (JSON.stringify(body.profile || null).length > MAX_PROFILE_BYTES) {
+    return json({ error: 'profile too large' }, 413);
+  }
+
+  const now = Date.now();
+  const db = env.DB;
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const user = await getUser(db, await sha256Hex(token), ip, now);
+  if (!user) return json({ error: 'too many new pairings from this address; try later' }, 429);
+
+  await ensureUsageLog(db);
+  if (await usageLastHour(db, user.id, 'placement', now) >= PLACEMENT_PER_HOUR) {
+    return json({
+      error: `placement limit reached (${PLACEMENT_PER_HOUR} questions per hour); try again later`,
+    }, 429);
+  }
+
+  let parsed;
+  try {
+    parsed = extractJson(await callModel(
+      model.env, PLACEMENT_SYSTEM, buildPlacementPrompt(body, allowed)));
+  } catch (err) {
+    return modelFailure('placement_error', err,
+      'could not continue the interview right now; try again shortly');
+  }
+
+  const reply = askText(parsed.reply, MAX_PLACEMENT_REPLY);
+  if (!reply) return json({ error: 'the examiner returned nothing to say' }, 502);
+
+  await recordUsage(db, user.id, 'placement', now);
+  return json({
+    // A level outside the band is not a suggestion to weigh — the ladder
+    // already ruled it out — so it becomes the suggestion the client sent.
+    level: allowed.includes(Number(parsed.level)) ? Number(parsed.level) : target,
+    reply,
+    taskType: askText(parsed.taskType, 40),
+    // Nothing to mark on the opening turn, and a result only on the last one:
+    // whatever the model returned otherwise is dropped rather than charted.
+    assess: body.answer || (Array.isArray(body.history) && body.history.length)
+      ? cleanAssess(parsed.assess) : null,
+    result: body.finish ? cleanResult(parsed.result) : null,
+    generatedAt: now,
+  });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
     const { pathname } = new URL(request.url);
-    if (pathname === '/api/health') return json({ ok: true });
+    // Health also answers "will the AI features work here, and does this
+    // deployment expect the caller to bring a key" — which a client cannot
+    // otherwise discover without spending a model call to be told no.
+    if (pathname === '/api/health') {
+      return json({
+        ok: true,
+        ai: {
+          configured: !!providerConfigured(env),
+          requiresUserKey: String(env.REQUIRE_USER_KEY) === 'true',
+        },
+      });
+    }
     if (pathname === '/api/sync') {
       if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
       try {
@@ -978,12 +1605,30 @@ export default {
         return json({ error: 'internal error' }, 500);
       }
     }
+    if (pathname === '/api/news/categories') {
+      if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
+      try {
+        return await handleNewsCategories(request, env);
+      } catch (err) {
+        console.log(JSON.stringify({ event: 'news_topics_error', error: String(err && err.stack || err) }));
+        return json({ error: 'internal error' }, 500);
+      }
+    }
     if (pathname === '/api/ask') {
       if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
       try {
         return await handleAsk(request, env);
       } catch (err) {
         console.log(JSON.stringify({ event: 'ask_error', error: String(err && err.stack || err) }));
+        return json({ error: 'internal error' }, 500);
+      }
+    }
+    if (pathname === '/api/placement') {
+      if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
+      try {
+        return await handlePlacement(request, env);
+      } catch (err) {
+        console.log(JSON.stringify({ event: 'placement_error', error: String(err && err.stack || err) }));
         return json({ error: 'internal error' }, 500);
       }
     }

@@ -1,10 +1,7 @@
 // Integration smoke test for the extension's own pages, driven in headless
-// Chrome. Chrome no longer honours --load-extension, so instead of installing
-// the extension this serves extension/ over http and injects a small `chrome`
-// shim before any page script runs. Only the transport is faked: the shim
-// forwards runtime.sendMessage to Node, where the REAL background handlers run
-// against the REAL bundled dictionary. Everything under test — module load
-// order, the shared popup, the guides, hover-to-define — is the shipped code.
+// Chrome through scripts/harness.mjs — the shipped code, a faked transport, and
+// the real dictionary running in Node. See that file for how the browser is
+// stood up; everything below is what we assert about it.
 //
 // Usage: node scripts/extension-smoke.mjs
 //   CHROME=/path/to/chrome    override the browser.
@@ -13,555 +10,9 @@
 //                             looks wrong, and twice now one did.
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join, normalize } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import {
-  parseDictTSV, buildIndex, buildRelatedIndex, findRelated, lookupAt,
-  charBreakdown, rankEntryIndices, parsePinyin, findExamples, sentencePinyin,
-} from '../extension/lib/cedict.js';
-import { resolveCard } from '../extension/lib/cards.js';
-import { buildScriptMap, convertText } from '../extension/lib/script.js';
-import { cardKey } from '../extension/lib/merge.js';
-
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const extDir = join(root, 'extension');
-const chromePath = process.env.CHROME ||
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-
-// --- the real lookup engine, as the service worker would run it ------------
-
-const entries = parseDictTSV(readFileSync(join(extDir, 'data/dict.tsv'), 'utf8'));
-const index = buildIndex(entries);
-const relatedIndex = buildRelatedIndex(entries);
-const scriptMap = buildScriptMap(entries);
-const sentences = [];
-for (const line of readFileSync(join(extDir, 'data/sentences.tsv'), 'utf8').split('\n')) {
-  if (!line) continue;
-  const [zh, py, en] = line.split('\t');
-  if (zh && en) sentences.push({ zh, py: py || '', en });
-}
-
-const forDisplay = (e) => ({
-  trad: e.trad, simp: e.simp, pinyin: parsePinyin(e.pinyin), defs: e.defs,
-});
-
-function handleLookup(msg) {
-  const { groups, highlight } = lookupAt(index, entries, msg.text || '', msg.cursorIndex || 0);
-  if (groups.length === 0) return { matches: [] };
-  const ranked = groups.map((g) => ({
-    ...g,
-    entries: rankEntryIndices(g.entries.map((_, i) => i), g.entries).map((i) => g.entries[i]),
-  }));
-  const top = ranked[0].entries[0];
-  return {
-    matches: ranked.slice(0, 8).map((g) => ({ word: g.word, entries: g.entries.map(forDisplay) })),
-    highlight,
-    chars: charBreakdown(index, groups[0].word).map((c) => ({
-      char: c.char,
-      entryCount: c.idxs.length,
-      entries: rankEntryIndices(c.idxs, entries).slice(0, 3).map((i) => forDisplay(entries[i])),
-    })),
-    related: msg.includeRelated === false ? []
-      : findRelated(entries, index, relatedIndex, groups[0].word, 3)
-        .map((r) => ({ ...forDisplay(entries[r.idx]), reason: r.reason })),
-    examples: findExamples(sentences, top.simp, top.trad, msg.exampleCount ?? 8, index, entries)
-      .map((s) => ({ zh: s.zh, py: s.py, en: s.en })),
-    exampleWord: { simp: top.simp, trad: top.trad },
-  };
-}
-
-const handlers = {
-  lookup: handleLookup,
-  pinyinBatch: (msg) => ({
-    pinyin: (msg.texts || []).map((t) => (t ? sentencePinyin(index, entries, t) : '')),
-  }),
-  examples: (msg) => ({
-    examples: findExamples(sentences, msg.simp, msg.trad || msg.simp, msg.count ?? 2, index, entries)
-      .map((s) => ({ zh: s.zh, py: s.py, en: s.en })),
-  }),
-  speak: () => ({ ok: true }),
-  convertScript: (msg) => ({
-    texts: (msg.texts || []).map(
-      (t) => convertText(index, entries, scriptMap, String(t ?? ''), msg.to)),
-  }),
-  // Shaping a card needs the dictionary, so it happens here, exactly as the
-  // service worker does it. Whether the card is already saved is filled in by
-  // the shim, which is where the word list lives.
-  resolveCards: (msg) => ({
-    cards: (msg.items || []).map((item) => {
-      const out = resolveCard({
-        map: index,
-        entries,
-        text: String(item?.text || ''),
-        en: String(item?.en || ''),
-        sourceWord: String(item?.sourceWord || ''),
-        unit: !!item?.unit,
-      });
-      return out.issue ? { issue: out.issue } : { card: out.card, key: cardKey(out.card) };
-    }),
-  }),
-  // saveWord/unsaveWord/savedStates are answered in the page instead: they
-  // operate on the word list, which lives in the shim's fake storage.
-  pinyinChars: () => ({ chars: [] }),
-  listVoices: () => ({ voices: [] }),
-  getEnabled: () => ({ enabled: true }),
-  syncNow: () => ({ ok: true }),
-};
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.json': 'application/json',
-  '.tsv': 'text/plain; charset=utf-8', '.png': 'image/png',
-};
-
-// A stand-in for an arbitrary web page, loading the content script exactly the
-// way the manifest does — read from the manifest rather than copied, so adding
-// a script there cannot leave this page loading a half-wired extension.
-const contentScripts = JSON.parse(readFileSync(join(extDir, 'manifest.json'), 'utf8'))
-  .content_scripts[0].js;
-const TEST_PAGE = `<!DOCTYPE html><meta charset="utf-8">
-<body style="margin:0;padding:60px;font-size:34px;line-height:2">
-<p id="t">我很喜欢学习中文。</p>
-${contentScripts.map((f) => `<script src="/${f}"></script>`).join('\n')}
-</body>`;
-
-// Stands in for the sync Worker's tutor endpoint, and records what the page
-// actually sent so a test can assert the context travelled with the question.
-let lastAsk = null;
-
-const server = createServer(async (req, res) => {
-  if (req.url === '/api/ask') {
-    const chunks = [];
-    for await (const c of req) chunks.push(c);
-    lastAsk = JSON.parse(Buffer.concat(chunks).toString());
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({
-      answer: '这个词很常用。It is used for studying in general.',
-      generatedAt: 1,
-    }));
-    return;
-  }
-  if (req.url === '/__lastask') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(lastAsk));
-    return;
-  }
-  if (req.url === '/__page') {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(TEST_PAGE);
-    return;
-  }
-  if (req.url === '/__msg') {
-    const chunks = [];
-    for await (const c of req) chunks.push(c);
-    let out;
-    try {
-      const msg = JSON.parse(Buffer.concat(chunks).toString());
-      out = handlers[msg.type] ? handlers[msg.type](msg) : { error: `no handler: ${msg.type}` };
-    } catch (e) {
-      out = { error: String(e.message) };
-    }
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(out));
-    return;
-  }
-  const path = normalize(decodeURIComponent(req.url.split('?')[0])).replace(/^(\.\.[/\\])+/, '');
-  const file = join(extDir, path);
-  if (!file.startsWith(extDir) || !existsSync(file)) {
-    res.writeHead(404).end('not found');
-    return;
-  }
-  const ext = file.slice(file.lastIndexOf('.'));
-  res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream' });
-  res.end(readFileSync(file));
-});
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const base = `http://127.0.0.1:${server.address().port}`;
-
-// The pages only ever touch these corners of the extension API.
-const CHROME_SHIM = `
-  (() => {
-    // Persisted so it behaves like real extension storage across a reload —
-    // this script re-runs on every document.
-    const KEY = '__zw_smoke_storage__';
-    let store = { local: {}, sync: {} };
-    try {
-      const saved = JSON.parse(localStorage.getItem(KEY));
-      if (saved && saved.local && saved.sync) store = saved;
-    } catch { /* first load */ }
-    const persist = () => {
-      try { localStorage.setItem(KEY, JSON.stringify(store)); } catch { /* quota */ }
-    };
-    // Change events are how the app keeps itself in step with itself — live
-    // due counts, the library repainting on a save, the script toggle. A shim
-    // that silently never fires them leaves all of that untested.
-    const listeners = [];
-    const notify = (name, changes) => {
-      if (!Object.keys(changes).length) return;
-      for (const fn of listeners.slice()) {
-        try { fn(changes, name); } catch { /* a listener must not break a write */ }
-      }
-    };
-    const area = (name) => ({
-      get(keys) {
-        const bag = store[name];
-        if (keys == null) return Promise.resolve({ ...bag });
-        if (typeof keys === 'string') return Promise.resolve({ [keys]: bag[keys] });
-        if (Array.isArray(keys)) {
-          const out = {};
-          for (const k of keys) out[k] = bag[k];
-          return Promise.resolve(out);
-        }
-        const out = { ...keys };
-        for (const k of Object.keys(keys)) if (k in bag) out[k] = bag[k];
-        return Promise.resolve(out);
-      },
-      set(values) {
-        const changes = {};
-        for (const [k, v] of Object.entries(values)) {
-          const oldValue = store[name][k];
-          if (JSON.stringify(oldValue) === JSON.stringify(v)) continue;
-          changes[k] = oldValue === undefined ? { newValue: v } : { oldValue, newValue: v };
-        }
-        Object.assign(store[name], values);
-        persist();
-        notify(name, changes);
-        return Promise.resolve();
-      },
-      remove(keys) {
-        const changes = {};
-        for (const k of [].concat(keys)) {
-          if (k in store[name]) changes[k] = { oldValue: store[name][k] };
-          delete store[name][k];
-        }
-        persist();
-        notify(name, changes);
-        return Promise.resolve();
-      },
-    });
-
-    // The card handlers read and write the word list, which lives in this
-    // fake storage rather than in Node — so unlike lookups they are answered
-    // here. Same identity rule as cardKey() in lib/merge.js.
-    const cardKey = (c) => [c.cardType || 'word', c.simp || '',
-      c.trad || c.simp || '', c.pinyin || ''].join('\\u0001');
-    const cardHandlers = {
-      saveWord: (msg) => {
-        const e = msg.entry || {};
-        if (!e.simp) return { ok: false };
-        const list = (store.local.wordlist || []).filter((w) => cardKey(w) !== cardKey(e));
-        list.unshift({ ...e, cardType: e.cardType || 'word', savedAt: Date.now(),
-          lastSavedAt: Date.now(), touches: 1, srs: null });
-        store.local.wordlist = list;
-        persist();
-        return { ok: true, count: list.length };
-      },
-      unsaveWord: (msg) => {
-        const e = msg.entry || {};
-        if (!e.simp) return { ok: false };
-        store.local.wordlist =
-          (store.local.wordlist || []).filter((w) => cardKey(w) !== cardKey(e));
-        persist();
-        return { ok: true, removed: true, count: store.local.wordlist.length };
-      },
-      savedStates: (msg) => {
-        const have = new Set((store.local.wordlist || []).map(cardKey));
-        return { saved: (msg.keys || []).map((k) => have.has(k)) };
-      },
-      // Half here, half in Node: the dictionary shapes the card, this side
-      // knows what is already in the deck.
-      resolveCards: async (msg) => {
-        const r = await fetch('/__msg', {
-          method: 'POST', body: JSON.stringify(msg),
-        }).then((res) => res.json());
-        const have = new Set((store.local.wordlist || []).map(cardKey));
-        return {
-          cards: (r.cards || []).map((c) => (c && c.key ? { ...c, saved: have.has(c.key) } : c)),
-        };
-      },
-    };
-
-    globalThis.chrome = {
-      runtime: {
-        id: 'smoke',
-        getURL: (p) => '/' + String(p).replace(/^\\//, ''),
-        sendMessage: (msg) => (cardHandlers[msg && msg.type]
-          ? Promise.resolve(cardHandlers[msg.type](msg))
-          : fetch('/__msg', {
-            method: 'POST', body: JSON.stringify(msg),
-          }).then((r) => r.json())),
-        openOptionsPage: () => {},
-      },
-      storage: {
-        local: area('local'),
-        sync: area('sync'),
-        onChanged: {
-          addListener: (fn) => listeners.push(fn),
-          removeListener: (fn) => {
-            const i = listeners.indexOf(fn);
-            if (i >= 0) listeners.splice(i, 1);
-          },
-        },
-      },
-      tts: { speak: () => Promise.resolve(), stop() {}, getVoices: () => Promise.resolve([]) },
-    };
-  })();
-`;
-
-// --- CDP plumbing ----------------------------------------------------------
-
-const profile = mkdtempSync(join(tmpdir(), 'zw-smoke-'));
-const chrome = spawn(chromePath, [
-  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-  `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank',
-], { stdio: 'ignore' });
+import { base, openPage } from './harness.mjs';
 
 let failed = false;
-function shutdown() {
-  try { chrome.kill(); } catch { /* already gone */ }
-  try { server.close(); } catch { /* already closed */ }
-}
-process.on('exit', shutdown);
-
-async function devtoolsPort() {
-  const portFile = join(profile, 'DevToolsActivePort');
-  for (let i = 0; i < 600; i++) {
-    try {
-      return Number(readFileSync(portFile, 'utf8').split('\n')[0]);
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  throw new Error('Chrome did not expose a DevTools port');
-}
-const port = await devtoolsPort();
-
-async function openPage(page) {
-  const target = await (await fetch(
-    `http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' },
-  )).json();
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
-
-  let msgId = 0;
-  const pending = new Map();
-  const errors = [];
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
-    if (msg.id && pending.has(msg.id)) {
-      pending.get(msg.id)(msg);
-      pending.delete(msg.id);
-      return;
-    }
-    if (msg.method === 'Runtime.exceptionThrown') {
-      const d = msg.params.exceptionDetails;
-      errors.push((d.exception?.description || d.text || 'error').split('\n')[0]);
-    }
-  };
-  const cdp = (method, params = {}) => {
-    const id = ++msgId;
-    ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => {
-      pending.set(id, (m) =>
-        (m.error ? reject(new Error(`${method}: ${m.error.message}`)) : resolve(m.result)));
-    });
-  };
-
-  await cdp('Runtime.enable');
-  await cdp('Page.enable');
-  await cdp('DOM.enable');
-  // Must be installed before the document exists: the page modules read
-  // globalThis.chrome at evaluation time.
-  await cdp('Page.addScriptToEvaluateOnNewDocument', { source: CHROME_SHIM });
-  await cdp('Page.navigate', { url: `${base}/${page}` });
-
-  async function evalJs(expression) {
-    const { result, exceptionDetails } = await cdp('Runtime.evaluate', {
-      expression, returnByValue: true, awaitPromise: true,
-    });
-    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description || 'JS error');
-    return result.value;
-  }
-
-  async function waitFor(expression, label, timeoutMs = 25000) {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const value = await evalJs(expression).catch(() => null);
-      if (value) return value;
-      if (Date.now() > deadline) throw new Error(`${page}: timed out waiting for ${label}`);
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-
-  // Everything the popup renders lives in a closed shadow root, so read it the
-  // way a user sees it — through CDP's piercing traversal, not a test hook.
-  // Where the popup actually is on screen. Reading its HTML proves the code
-  // ran; it does not prove the learner can see it — a panel that is display:
-  // none, zero-sized, or parked off-viewport serialises exactly the same.
-  async function popupBox() {
-    const { root: doc } = await cdp('DOM.getDocument', { depth: -1, pierce: true });
-    let found = null;
-    const walk = (node) => {
-      if (found) return;
-      const attrs = node.attributes || [];
-      for (let i = 0; i < attrs.length; i += 2) {
-        if (attrs[i] === 'class' && /(^| )popup( |$)/.test(attrs[i + 1])) {
-          found = node.nodeId;
-          return;
-        }
-      }
-      for (const shadow of node.shadowRoots || []) walk(shadow);
-      for (const child of node.children || []) walk(child);
-      if (node.contentDocument) walk(node.contentDocument);
-    };
-    walk(doc);
-    if (!found) return null;
-    const box = await cdp('DOM.getBoxModel', { nodeId: found }).catch(() => null);
-    if (!box) return null; // no box at all == not rendered
-    const [x1, y1, , , x2, y2] = box.model.border;
-    return { x: x1, y: y1, width: box.model.width, height: box.model.height, right: x2, bottom: y2 };
-  }
-
-  async function popupHtml() {
-    const { root: doc } = await cdp('DOM.getDocument', { depth: -1, pierce: true });
-    const roots = [];
-    const walk = (node) => {
-      for (const shadow of node.shadowRoots || []) {
-        roots.push(shadow.nodeId);
-        walk(shadow);
-      }
-      for (const child of node.children || []) walk(child);
-    };
-    walk(doc);
-    let html = '';
-    for (const nodeId of roots) {
-      const r = await cdp('DOM.getOuterHTML', { nodeId }).catch(() => null);
-      if (r) html += r.outerHTML;
-    }
-    return html;
-  }
-
-  // The selection bar is in a closed shadow root too, so a test reaches its
-  // buttons the way it reaches the popup's markup: through CDP's piercing
-  // traversal, by the data-action each button carries. Returns the point to
-  // click, or null while the action is not on screen.
-  async function actionPoint(action) {
-    const { root } = await cdp('DOM.getDocument', { depth: -1, pierce: true });
-    let found = null;
-    const walk = (node) => {
-      if (found) return;
-      const attrs = node.attributes || [];
-      for (let i = 0; i < attrs.length; i += 2) {
-        if (attrs[i] === 'data-action' && attrs[i + 1] === action) { found = node.nodeId; return; }
-      }
-      for (const shadow of node.shadowRoots || []) walk(shadow);
-      for (const child of node.children || []) walk(child);
-    };
-    walk(root);
-    if (!found) return null;
-    const box = await cdp('DOM.getBoxModel', { nodeId: found }).catch(() => null);
-    if (!box) return null;
-    const [x1, y1, , , x3, y3] = box.model.content;
-    return { x: Math.round((x1 + x3) / 2), y: Math.round((y1 + y3) / 2) };
-  }
-
-  async function waitForAction(action, timeoutMs = 15000) {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const point = await actionPoint(action);
-      if (point) return point;
-      if (Date.now() > deadline) throw new Error(`${page}: timed out waiting for "${action}"`);
-      await new Promise((r) => setTimeout(r, 150));
-    }
-  }
-
-  // Popup state that arrives after a round trip to the worker (the saved
-  // markers) cannot be waited on from page JS — the shadow root is closed.
-  async function waitForPopup(pattern, label, timeoutMs = 15000) {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const html = await popupHtml();
-      if (pattern.test(html)) return html;
-      if (Date.now() > deadline) throw new Error(`${page}: timed out waiting for ${label}`);
-      await new Promise((r) => setTimeout(r, 150));
-    }
-  }
-
-  // A trusted key press: the popup's shortcuts ignore synthetic events.
-  async function pressKey(key) {
-    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, text: key });
-    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key });
-  }
-
-  // A trusted pointer move, so the content script's isTrusted guard is
-  // exercised the same way a real hover would exercise it.
-  async function moveMouseTo(x, y) {
-    await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 });
-  }
-
-  // Scrolling is what most of these checks do just before measuring an
-  // element, and the popup hides on scroll — so a trailing scroll event can
-  // close the panel a hover is about to open, or reflow can move the target
-  // out from under coordinates already taken. Wait for a frame plus a beat.
-  async function settle(ms = 200) {
-    await evalJs('new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)))');
-    await new Promise((r) => setTimeout(r, ms));
-  }
-
-  // A real press-drag-release, which is the only way to find out whether text
-  // on the page can actually be selected with a mouse.
-  async function dragSelect(from, to) {
-    await cdp('Input.dispatchMouseEvent', {
-      type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1,
-    });
-    const steps = 8;
-    for (let i = 1; i <= steps; i++) {
-      await cdp('Input.dispatchMouseEvent', {
-        type: 'mouseMoved', button: 'left', buttons: 1,
-        x: Math.round(from.x + ((to.x - from.x) * i) / steps),
-        y: Math.round(from.y + ((to.y - from.y) * i) / steps),
-      });
-    }
-    await cdp('Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x: to.x, y: to.y, button: 'left', buttons: 0, clickCount: 1,
-    });
-  }
-
-  async function clickAt(x, y) {
-    await cdp('Input.dispatchMouseEvent', {
-      type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1,
-    });
-    await cdp('Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1,
-    });
-  }
-
-  // Debug affordance, off unless ZX_SHOTS names a directory: the assertions
-  // can all pass on a page that looks broken.
-  // Screenshots are taken at whatever size Chrome defaults to, which is not
-  // the size a library of 97 cards is actually read at.
-  async function setViewport(width, height) {
-    await cdp('Emulation.setDeviceMetricsOverride', {
-      width, height, deviceScaleFactor: 1, mobile: false,
-    });
-  }
-
-  async function shot(name) {
-    if (!process.env.ZX_SHOTS) return;
-    const { data } = await cdp('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(join(process.env.ZX_SHOTS, `${name}.png`), Buffer.from(data, 'base64'));
-  }
-
-  return {
-    page, evalJs, waitFor, popupHtml, popupBox, waitForPopup, pressKey, moveMouseTo,
-    dragSelect, clickAt, actionPoint, waitForAction, settle, shot, setViewport, errors,
-    close: () => ws.close(),
-  };
-}
 
 const results = [];
 async function check(name, fn) {
@@ -572,6 +23,18 @@ async function check(name, fn) {
     failed = true;
     results.push(`  FAIL  ${name}\n          ${String(e.message).split('\n')[0]}`);
   }
+}
+
+// The tutor drawer is one switch for the whole profile, so it may already be
+// open when a page arrives — it follows you from the page before. "Open it"
+// therefore means "press the switch unless it is already pressed", not "press
+// the switch", which would close it.
+async function openDrawer(page) {
+  await page.waitFor('!document.getElementById("tutorToggle").disabled', 'the Ask switch');
+  await page.evalJs(`(() => {
+    if (document.querySelector('.tutor').hidden) document.getElementById('tutorToggle').click();
+  })()`);
+  await page.waitFor('!document.querySelector(".tutor").hidden', 'the tutor drawer');
 }
 
 const hover = (selector) => `(() => {
@@ -795,29 +258,43 @@ await check('the guides open the tutor as a drawer, not a docked column', async 
     'the docked column is still in the markup');
   assert.equal(await hsk.evalJs('!!document.querySelector(".tutor.tutor-drawer")'), true,
     'no drawer on the guides');
-  // Earlier checks on this page left it open; closing must fall back to the
-  // launcher rather than removing the tutor from the page.
+  // Earlier checks on this page left it open; closing must leave the navbar's
+  // Ask switch un-pressed rather than removing the tutor from the page.
   await hsk.evalJs(`(() => {
     const close = document.querySelector('.tutor-close');
     if (!document.querySelector('.tutor').hidden) close.click();
   })()`);
   await hsk.waitFor('document.querySelector(".tutor").hidden', 'the closed drawer');
-  assert.equal(await hsk.evalJs('document.getElementById("tutorLauncher").hidden'), false,
+  assert.equal(await hsk.evalJs('document.getElementById("tutorToggle").hidden'), false,
     'closing the drawer left no way back into it');
-  await hsk.evalJs('document.getElementById("tutorLauncher").click()');
+  await hsk.waitFor('document.getElementById("tutorToggle").getAttribute("aria-pressed") === "false"',
+    'the switch to come back up');
+  await hsk.evalJs('document.getElementById("tutorToggle").click()');
   await hsk.waitFor('!document.querySelector(".tutor").hidden', 'the drawer');
-  // Right edge, full height — the same panel the other pages slide out.
+  // It slides in; measuring mid-slide reads the transform, not the layout.
+  await hsk.waitFor('document.querySelector(".tutor").getAnimations().length === 0',
+    'the drawer to finish sliding');
+  // The right-hand strip below the navbar, which stays where it is: the drawer
+  // takes its width out of the page, not out of the bar.
   const box = await hsk.evalJs(`(() => {
     const r = document.querySelector('.tutor').getBoundingClientRect();
+    const head = document.querySelector('.zx-header').getBoundingClientRect();
     return { right: Math.round(innerWidth - r.right), top: Math.round(r.top),
-      width: Math.round(r.width) };
+      width: Math.round(r.width), left: Math.round(r.left),
+      headHeight: Math.round(head.height), headRight: Math.round(innerWidth - head.right),
+      bodyRight: Math.round(document.querySelector('.layout').getBoundingClientRect().right) };
   })()`);
   assert.equal(box.right, 0, `drawer is ${box.right}px off the right edge`);
-  assert.equal(box.top, 0, 'drawer does not run full height');
+  assert.equal(box.top, box.headHeight,
+    'the drawer covers the navbar instead of starting under it');
   assert.ok(box.width > 200, `drawer is only ${box.width}px wide`);
+  assert.equal(box.headRight, 0, 'the navbar moved when the drawer opened');
+  assert.ok(box.bodyRight <= box.left + 1,
+    `the page runs to ${box.bodyRight} but the drawer starts at ${box.left}`);
   await hsk.shot('tutor-drawer-guides');
   await hsk.evalJs('document.querySelector(".tutor-close").click()');
 });
+
 // The toggle has to move the whole app, not just the surfaces that happen to
 // store both forms. A guide is written in simplified, so flipping to
 // traditional has to convert it — and by word, so 发 lands right.
@@ -854,13 +331,14 @@ hsk.close();
 // tab set here is what stops the drift this replaced: five hand-written navs
 // that had grown different link lists, and one still advertising a page that
 // no longer existed.
-const NAV_TABS = ['Review', 'Library', 'Guides', 'News'];
+const NAV_TABS = ['Review', 'Library', 'Guides', 'Level', 'News'];
 
 for (const [page, ready, active] of [
   ['review.html', '!!document.getElementById("app")', 'review'],
   ['wordlist.html', '!!document.getElementById("list")', 'library'],
   ['news.html', '!!document.getElementById("app")', 'news'],
   ['hsk.html', '!!document.getElementById("rail")', 'guides'],
+  ['placement.html', '!!document.querySelector("#view .panel, #view .headline")', 'placement'],
   ['options.html', '!!document.getElementById("saved")', 'options'],
 ]) {
   const tab = await openPage(page);
@@ -890,6 +368,190 @@ for (const [page, ready, active] of [
   });
   tab.close();
 }
+
+// --- the API key notice ----------------------------------------------------
+//
+// Four features run on a model, and each used to meet a missing key by failing
+// inside itself with a sentence only that page showed. The bar carries it now,
+// and — the part worth a test — it stays quiet for a deployment that pays for
+// its own calls, because nagging somebody to paste a key they do not need is
+// worse than saying nothing.
+
+const keyless = await openPage('wordlist.html');
+await check('a paired browser with no API key is told so, in the bar', async () => {
+  await keyless.waitFor('!!document.querySelector(".zx-header")', 'the navbar');
+  await keyless.evalJs('chrome.storage.local.remove(["aiKey", "aiState", "aiHealth"])');
+  await keyless.evalJs(`chrome.storage.local.set({ syncMeta: {
+    token: 'smoketokensmoketokensmoketoken', serverUrl: location.origin, cursor: 0, lastPushAt: 0 } })`);
+  await keyless.waitFor('!document.querySelector(".zx-notice").hidden', 'the notice');
+  assert.match(
+    await keyless.evalJs('document.querySelector(".zx-notice-text").textContent'),
+    /API key/);
+  // It goes to the field, not to the top of a six-section settings page.
+  assert.match(await keyless.evalJs('document.querySelector(".zx-notice").getAttribute("href")'),
+    /options\.html#ai$/);
+});
+await keyless.shot('ai-notice');
+
+await check('pasting a key puts the notice away without a reload', async () => {
+  await keyless.evalJs(`chrome.storage.local.set({ aiKey: 'sk-${'x'.repeat(40)}' })`);
+  await keyless.waitFor('document.querySelector(".zx-notice").hidden', 'the notice to go');
+});
+
+await check('a rejected key raises the notice on every page, not only the one that failed', async () => {
+  // The state is the app's, not the failing page's — which is the whole reason
+  // it lives in lib/aistatus.js rather than in whichever tab asked first.
+  await keyless.evalJs(
+    `chrome.storage.local.set({ aiState: { code: 'bad-key', at: Date.now(), detail: 'refused' } })`);
+  await keyless.waitFor('!document.querySelector(".zx-notice").hidden', 'the notice');
+  assert.match(
+    await keyless.evalJs('document.querySelector(".zx-notice-text").textContent'), /rejected/);
+
+  const elsewhere = await openPage('hsk.html');
+  await elsewhere.waitFor('!document.querySelector(".zx-notice").hidden',
+    'the notice on a page that never made a request');
+  assert.deepEqual(elsewhere.errors, []);
+  elsewhere.close();
+});
+
+await check('the options page lands on the AI key field when sent there', async () => {
+  const opts = await openPage('options.html#ai');
+  await opts.waitFor('!!document.getElementById("aiKey")', 'the options page');
+  await opts.waitFor('document.querySelector("#ai").classList.contains("called-out")',
+    'the section to be called out');
+  assert.equal(await opts.evalJs('document.activeElement.id'), 'aiKey',
+    'landed on the section but not on the field');
+  // And it says what the app knows about the key, not just that one is saved.
+  await opts.waitFor('/rejected/i.test(document.getElementById("aiKeyStatus").textContent)',
+    'the rejection to be explained where it is fixed');
+  await opts.shot('ai-notice-options');
+  assert.deepEqual(opts.errors, []);
+  opts.close();
+});
+
+await check('a deployment that supplies its own key raises nothing', async () => {
+  await keyless.evalJs('chrome.storage.local.remove(["aiKey", "aiState"])');
+  await keyless.evalJs(`chrome.storage.local.set({ aiHealth: {
+    at: Date.now(), serverUrl: location.origin, configured: true, requiresUserKey: false } })`);
+  await keyless.waitFor('document.querySelector(".zx-notice").hidden',
+    'the notice to stay down for a server that pays its own way');
+});
+await check('wordlist.html raised no page errors with the notice', () =>
+  assert.deepEqual(keyless.errors, []));
+keyless.close();
+
+// --- the placement interview, start to report ------------------------------
+//
+// The harness plays a learner who is comfortable to HSK 4 and lost above it
+// (scripts/harness.mjs), so a run driven through it has a known answer. This
+// is the only check that the ladder in lib/placement.js, the transport, and
+// the report on screen agree with each other — the unit tests drive the rules
+// with no page, and the page can render a perfectly tidy wrong number.
+
+const place = await openPage('placement.html');
+await check('the placement interview runs to a report and lands on the right level', async () => {
+  await place.waitFor('!!document.querySelector("#view .panel")', 'the invitation');
+  await place.evalJs(`chrome.storage.local.set({ syncMeta: {
+    token: 'smoketokensmoketokensmoketoken', serverUrl: location.origin, cursor: 0, lastPushAt: 0 } })`);
+  await place.evalJs(
+    '[...document.querySelectorAll("#view button")].find(b => /Start/.test(b.textContent)).click()');
+  await place.waitFor('document.querySelectorAll(".log .msg.examiner .zh").length > 0',
+    'the first question');
+
+  // Answer every task until the run ends of its own accord. The cap is the
+  // ladder's own ceiling plus slack: a run that needs more turns than the rules
+  // permit is the bug this is here to catch.
+  for (let i = 0; i < 20; i++) {
+    if (await place.evalJs('!!document.querySelector("#view .headline")')) break;
+    // Count before sending, not after: the reply can land between the two, and
+    // waiting for a number already reached never returns.
+    const asked = await place.evalJs('document.querySelectorAll(".log .msg.examiner .zh").length');
+    await place.evalJs(`(() => {
+      const box = document.getElementById('answer');
+      if (!box || box.disabled) return;
+      box.value = '我今天学习了中文。';
+      box.closest('form').requestSubmit();
+    })()`);
+    await place.waitFor(
+      `document.querySelectorAll(".log .msg.examiner .zh").length > ${asked}`
+      + ' || !!document.querySelector("#view .headline")',
+      'the next question or the report');
+  }
+
+  await place.waitFor('!!document.querySelector("#view .headline")', 'the report');
+  assert.equal(await place.evalJs('document.querySelector(".headline .level b").textContent'),
+    'HSK 4', 'the interview did not land on the level the examiner was playing');
+  assert.deepEqual(place.errors, []);
+});
+await place.shot('placement-report');
+
+await check('the report charts every level, not only the ones asked about', async () => {
+  assert.equal(await place.evalJs('document.querySelectorAll(".ladder .lad-row").length'), 9);
+  // The level the number came from is marked in the chart, not only stated
+  // above it.
+  assert.equal(await place.evalJs(
+    'document.querySelector(".ladder .lad-row[data-here]").textContent.includes("HSK 4")'), true);
+  assert.equal(await place.evalJs(
+    'document.querySelectorAll(".ladder .lad-row[data-verdict=untested]").length > 0'), true,
+  'levels that were never asked about should still have a row');
+});
+
+await check('corrections from the interview can be saved as cards', async () => {
+  await place.waitFor('!!document.querySelector(".fix .zwe-save:not([disabled])")',
+    'a saveable correction');
+  const before = await place.evalJs(
+    'chrome.storage.local.get("wordlist").then(r => (r.wordlist || []).length)');
+  await place.evalJs('document.querySelector(".fix .zwe-save").click()');
+  await place.waitFor(
+    'chrome.storage.local.get("wordlist")'
+    + `.then(r => (r.wordlist || []).length > ${before})`,
+    'the correction to reach the deck');
+  assert.equal(await place.evalJs('document.querySelector(".fix .zwe-save").textContent'), '✓');
+
+  // Put it back. The deck is shared with every check after this one, and a card
+  // left behind here moves whatever they count.
+  await place.evalJs('document.querySelector(".fix .zwe-save").click()');
+  await place.waitFor(
+    'chrome.storage.local.get("wordlist")'
+    + `.then(r => (r.wordlist || []).length === ${before})`,
+    'the correction to come back out');
+});
+
+await check('the interview sent the rubric, the deck and the transcript', async () => {
+  const calls = await (await fetch(`${base}/__placement`)).json();
+  assert.ok(calls.length >= 3, `only ${calls.length} turns reached the examiner`);
+  const [first] = calls;
+  assert.ok(first.rubrics?.length, 'no rubric travelled with the opening turn');
+  assert.ok(first.rubrics[0].canDo?.length, 'the rubric carried no can-do statements');
+  assert.ok(first.rubrics[0].grammar?.length, 'the rubric carried no grammar points');
+  assert.ok(first.profile, 'the deck profile never reached the examiner');
+  assert.equal(first.history.length, 0, 'the opening turn invented a transcript');
+
+  // Every turn offers a band the examiner may choose from, and the answer
+  // being marked is named with the level it was asked at.
+  const second = calls[1];
+  assert.ok(second.allowed?.length, 'no band of levels travelled');
+  assert.ok(second.allowed.includes(second.target), 'the suggestion was outside its own band');
+  assert.equal(second.answer, '我今天学习了中文。');
+  assert.equal(typeof second.answeredLevel, 'number');
+  assert.ok(second.history.length >= 1, 'the transcript did not travel');
+  assert.equal(calls[calls.length - 1].finish, true, 'the run never asked for a report');
+});
+
+await check('a finished placement is what the page opens on next time', async () => {
+  const again = await openPage('placement.html');
+  await again.waitFor('!!document.querySelector("#view .headline")', 'the stored result');
+  assert.equal(await again.evalJs('document.querySelector(".headline .level b").textContent'),
+    'HSK 4');
+  // And the guides are pointed one level past what was held, so "what now" is
+  // answered by the app.
+  assert.equal(await again.evalJs(
+    'chrome.storage.local.get("hskLevel").then(r => r.hskLevel)'), 5);
+  assert.deepEqual(again.errors, []);
+  again.close();
+});
+await check('placement.html raised no page errors', () => assert.deepEqual(place.errors, []));
+place.close();
 
 // The AI key field is the one setup step every new user has to complete, and
 // it is the only control on the options page that is written on its own rather
@@ -928,10 +590,10 @@ await check('the dashboard shows every view as a tab', async () => {
   // The tabs are static markup; wait for newtab.js to have wired them, or a
   // click lands before there is a handler to receive it.
   await dash.waitFor('!!document.querySelector(".tab[aria-selected]")', 'the dashboard script');
-  await dash.waitFor('document.querySelectorAll(".tab").length === 4', 'four tabs');
+  await dash.waitFor('document.querySelectorAll(".tab").length === 5', 'five tabs');
   assert.deepEqual(
     await dash.evalJs('[...document.querySelectorAll(".tab")].map(t => t.dataset.view)'),
-    ['review', 'library', 'guides', 'news']);
+    ['review', 'library', 'guides', 'placement', 'news']);
 });
 await dash.shot('newtab');
 await check('opening a lazy tab keeps the top bar instead of navigating away', async () => {
@@ -1009,12 +671,91 @@ dash.close();
 
 // Same bug class as the quote chip: a `display` rule beating the hidden
 // attribute left this control permanently on screen.
+//
+// The attribute is set here rather than waited for. Whether the toolbar hides
+// it of its own accord depends on how many cards the checks before this one
+// happened to leave in the shared deck and whether sync was switched on, which
+// made this a race decided by the order of everything above. The bug it guards
+// is a CSS rule beating `hidden`, so it sets `hidden` and looks at the pixels.
 const newsTab = await openPage('news.html');
-await check('news keeps its difficulty control hidden until there is a digest', async () => {
+await check('the difficulty control is really hidden when it is hidden', async () => {
   await newsTab.waitFor('!!document.getElementById("app")', 'the digest container');
-  assert.equal(await newsTab.evalJs(
-    'getComputedStyle(document.getElementById("difficultyLabel")).display'), 'none');
+  assert.equal(await newsTab.evalJs(`(() => {
+    const el = document.getElementById('difficultyLabel');
+    el.hidden = true;
+    return getComputedStyle(el).display;
+  })()`), 'none');
 });
+
+// Articles are kept rather than replaced, so the page has to be able to show
+// you the ones it wrote before — including the one it wrote yesterday, which is
+// what the day headings are for.
+const digest = (title, extra = {}) => ({
+  level: 'HSK 3', targetHsk: 3, topics: ['环境'], title,
+  article: '这个星期，很多人一起去海边捡垃圾。\n\n他们说，海水比去年干净了一些。',
+  englishSummary: 'Volunteers cleaned a beach.',
+  glossary: [{ word: '垃圾', pinyin: 'lā jī', meaning: 'rubbish' }],
+  sources: [], ...extra,
+});
+const HISTORY = [
+  { id: '2', generatedAt: Date.now() - 3 * 60 * 60 * 1000, data: digest('海边的塑料越来越少') },
+  {
+    id: '1',
+    generatedAt: Date.now() - 27 * 60 * 60 * 1000,
+    data: digest('新的地铁线开始试运行', { topic: { label: '科技', query: '科技 新闻' } }),
+  },
+];
+await check('news opens on the last article and offers the ones before it', async () => {
+  await newsTab.evalJs(`chrome.storage.local.set({
+    newsHistory: ${JSON.stringify(HISTORY)},
+    wordlist: ${JSON.stringify(Array.from({ length: 6 }, (_, i) => ({
+    cardType: 'word', simp: '朋友', trad: '朋友', pinyin: 'péng you', tones: '2,0',
+    defs: 'friend', savedAt: i + 1, lastSavedAt: i + 1, touches: 1, srs: null,
+  })))},
+    syncMeta: { token: 'smoketokensmoketokensmoketoken', serverUrl: location.origin,
+                cursor: 0, lastPushAt: 0 } })`);
+  // The script toggle is profile-wide and an earlier check may have left it on
+  // traditional, which would repaint these headlines as 海邊的塑料 — a different
+  // string to match. This check is about the archive, so it pins the script.
+  await newsTab.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
+  // Stamp the outgoing document: a reload does not commit synchronously, and
+  // an earlier check may well have left an article on screen — the wait below
+  // would then be satisfied by the page on its way out.
+  await newsTab.evalJs('window.__stale = true');
+  await newsTab.evalJs('location.reload()');
+  await newsTab.waitFor('!window.__stale && !!document.querySelector(".article p")',
+    'the newest article');
+  assert.match(await newsTab.evalJs('document.querySelector(".headline h2").textContent'),
+    /海边的塑料/, 'the page opened on something other than the most recent article');
+  await newsTab.waitFor('!document.getElementById("history").hidden', 'the archive button');
+  assert.match(await newsTab.evalJs('document.getElementById("history").textContent'),
+    /\(2\)/, 'the archive button does not say how much is in it');
+});
+// Suggesting categories is a model call, so a page load must not make one: with
+// nothing cached the row is an offer, not a row of chips.
+await check('the category row waits to be asked before it costs anything', async () => {
+  const chips = await newsTab.evalJs(
+    '[...document.querySelectorAll("#cats button")].map(b => b.textContent)');
+  assert.deepEqual(chips, ['Suggest topics for me'],
+    `a page load should suggest nothing on its own; got ${chips.join(', ')}`);
+});
+await check('the archive lists past articles under the day they were written', async () => {
+  await newsTab.evalJs('document.getElementById("history").click()');
+  await newsTab.waitFor('document.querySelectorAll(".past").length === 2', 'both articles');
+  const days = await newsTab.evalJs('[...document.querySelectorAll(".day")].map(d => d.textContent)');
+  assert.deepEqual(days, ['Today', 'Yesterday'],
+    `articles should be grouped by day; got ${days.join(', ')}`);
+  // The topic a search asked for travels with the article, so the archive can
+  // say which of these you went looking for.
+  assert.equal(await newsTab.evalJs('document.querySelectorAll(".past .chip.asked").length'), 1);
+});
+await check('opening a past article brings it back', async () => {
+  await newsTab.evalJs('[...document.querySelectorAll(".past")].at(-1).click()');
+  await newsTab.waitFor('!!document.querySelector(".article p")', 'the older article');
+  assert.match(await newsTab.evalJs('document.querySelector(".headline h2").textContent'),
+    /地铁/, 'clicking a row in the archive did not open that article');
+});
+await check('news.html raised no page errors', () => assert.deepEqual(newsTab.errors, []));
 newsTab.close();
 
 // The library is the surface that had no hover at all before.
@@ -1041,10 +782,10 @@ await check('a saved word in the library is hoverable', async () => {
 // The library never gates the tutor, so it must be reachable on arrival — it
 // was previously constructed with its launcher hidden and nothing to show it.
 await check('the library offers the tutor without being asked', async () => {
-  assert.equal(await library.evalJs('document.getElementById("tutorLauncher").hidden'), false,
-    'the tutor launcher is hidden on a page that never gates it');
-  await library.evalJs('document.getElementById("tutorLauncher").click()');
-  await library.waitFor('!document.querySelector(".tutor").hidden', 'the tutor drawer');
+  await library.waitFor('!document.getElementById("tutorToggle").hidden', 'the Ask switch');
+  assert.equal(await library.evalJs('document.getElementById("tutorToggle").disabled'), false,
+    'Ask is dead on a page that never gates the tutor');
+  await openDrawer(library);
   await library.waitFor('document.querySelectorAll(".tutor .starter").length > 0',
     'the tutor to populate itself');
 });
@@ -1302,6 +1043,42 @@ await check('a full library fits its column without overflowing', async () => {
   assert.deepEqual(library.errors, []);
 });
 
+// The drawer is a column of the app, not a sheet over it. It used to be fixed
+// on top of a padded-out body, which left the document's own scrollbar running
+// down the outside of the chat: a scrollbar that looked like the chat's and
+// scrolled the article behind it.
+await check('the drawer is in the layout, and the page keeps its own scrollbar', async () => {
+  await library.setViewport(1365, 900);
+  await openDrawer(library);
+  await library.waitFor('document.querySelector(".tutor").getAnimations().length === 0',
+    'the drawer to finish sliding');
+  const layout = await library.evalJs(`(() => {
+    const drawer = document.querySelector('.tutor');
+    const page = document.querySelector('.zx-page');
+    const r = drawer.getBoundingClientRect();
+    const p = page.getBoundingClientRect();
+    return {
+      sibling: drawer.parentElement === page.parentElement,
+      fixed: getComputedStyle(drawer).position === 'fixed',
+      pageScrolls: page.scrollHeight > page.clientHeight + 1,
+      // The page's scrollbar lives inside its own column, so it stops where
+      // the drawer starts rather than running down the far side of it.
+      gutter: Math.round(p.width - page.clientWidth),
+      pageRight: Math.round(p.right),
+      drawerLeft: Math.round(r.left),
+      documentScrolls: document.documentElement.scrollHeight > innerHeight + 1,
+    };
+  })()`);
+  assert.ok(layout.sibling, 'the drawer is not a sibling of the page column');
+  assert.ok(!layout.fixed, 'the drawer is still floating over the page');
+  assert.ok(layout.pageScrolls, 'this check needs a page long enough to scroll');
+  assert.ok(layout.gutter > 0, 'the page column has no scrollbar of its own');
+  assert.ok(!layout.documentScrolls,
+    'the document still scrolls behind the drawer, so its scrollbar sits outside the chat');
+  assert.ok(Math.abs(layout.pageRight - layout.drawerLeft) <= 1,
+    `page ends at ${layout.pageRight}, drawer starts at ${layout.drawerLeft}`);
+});
+
 // Narrower than the table's floor it must scroll inside #list rather than
 // squeezing a column to nothing — which is what stacked the header one letter
 // per line at 680px.
@@ -1415,13 +1192,14 @@ await check('the tutor is offered on the answer, never on the question', async (
     touches: 1, srs: null }] })`);
   await review.evalJs('location.reload()');
   await review.waitFor('!!document.querySelector(".card .hanzi .lookup-char")', 'a card');
-  assert.equal(await review.evalJs('document.getElementById("tutorLauncher").hidden'), true,
-    'the tutor was offered before the answer was shown');
+  // The switch stays in the bar and goes flat, rather than vanishing and
+  // reappearing as you grade — but it must not open anything.
+  await review.waitFor('document.getElementById("tutorToggle").disabled',
+    'Ask to go flat on the question side');
 
   await review.evalJs('document.getElementById("reveal").click()');
-  await review.waitFor('!document.getElementById("tutorLauncher").hidden', 'the tutor launcher');
-  await review.evalJs('document.getElementById("tutorLauncher").click()');
-  await review.waitFor('!document.querySelector(".tutor").hidden', 'the tutor drawer');
+  await review.waitFor('!document.getElementById("tutorToggle").disabled', 'the Ask switch');
+  await openDrawer(review);
   assert.equal(await review.evalJs('!!document.getElementById("question")'), true,
     'the drawer has no question box');
 });
@@ -1452,7 +1230,81 @@ await check('the tutor asks the Worker with the card as context', async () => {
   assert.equal(asked.question, 'How is this word actually used?');
   assert.match(asked.context.where, /flashcard/);
   assert.match(asked.context.text, /Word card:|Sentence card:/);
+  // …and with who is asking. An answer pitched at nobody in particular is a
+  // dictionary entry with a friendlier voice.
+  assert.ok(asked.profile, 'the question carried no learner profile');
+  assert.equal(typeof asked.profile.savedWords, 'number', 'no deck counts in the profile');
+  assert.ok(Array.isArray(asked.profile.studyingWords), 'no review queue in the profile');
+  assert.ok(asked.profile.recentWords.includes('努力'),
+    `the card being reviewed is not in the deck the tutor was given: ${
+      JSON.stringify(asked.profile.recentWords)}`);
 });
+// Pasting a picture. The questions a learner most wants to ask are often about
+// Chinese the extension cannot reach — a sign, a menu, a screenshot from
+// another app — so the clipboard is the way in.
+await check('a pasted image is attached, shown with the question, and sent', async () => {
+  await review.evalJs(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 40; canvas.height = 30;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#b5232b';
+    ctx.fillRect(0, 0, 40, 30);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    const data = new DataTransfer();
+    data.items.add(new File([blob], 'sign.png', { type: 'image/png' }));
+    document.getElementById('question').dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  })()`);
+  await review.waitFor('document.querySelectorAll(".tutor-tray .tutor-chip img").length === 1',
+    'the pasted image in the tray');
+  // A picture on its own is a question; Ask must be live with an empty box.
+  assert.equal(await review.evalJs('document.getElementById("send").disabled'), false,
+    'Ask stayed dead with an image attached');
+  await review.shot('tutor-image-attached');
+
+  await review.evalJs(`(() => {
+    document.getElementById('question').value = 'What does this say?';
+    document.getElementById('composer').requestSubmit();
+  })()`);
+  await review.waitFor('document.querySelectorAll(".tutor-tray .tutor-chip").length === 0',
+    'the tray to empty on send');
+  await review.waitFor('document.querySelectorAll(".tutor .msg.user .shots img").length > 0',
+    'the image kept with the question');
+  // Above the bubble, not inside it: a picture and the sentence asking about it
+  // are two things.
+  assert.equal(await review.evalJs(
+    '!!document.querySelector(".tutor .msg.user .bubble .shots")'), false,
+  'the image was drawn inside the message bubble');
+  await review.shot('tutor-image-sent');
+  const asked = await (await fetch(`${base}/__lastask`)).json();
+  assert.equal(asked.images?.length, 1, 'the image never reached the request');
+  assert.equal(asked.images[0].mime, 'image/jpeg', 'the image was not shrunk before sending');
+  assert.ok(asked.images[0].data.length > 100, 'the image data is empty');
+  assert.ok(!asked.images[0].data.startsWith('data:'), 'the data: prefix was sent as payload');
+});
+
+// The bug this was reported as: the model said it could not see any image,
+// because a follow-up question sent none. A picture belongs to the
+// conversation, not to the one turn it arrived in.
+await check('a follow-up question still carries the picture', async () => {
+  await review.evalJs(`(() => {
+    document.getElementById('question').value = 'And the second line?';
+    document.getElementById('composer').requestSubmit();
+  })()`);
+  await review.waitFor(
+    'document.querySelectorAll(".tutor .msg.user").length > 1', 'the follow-up');
+  await review.settle(400);
+  const asked = await (await fetch(`${base}/__lastask`)).json();
+  assert.equal(asked.question, 'And the second line?');
+  assert.equal(asked.images?.length, 1, 'the picture was dropped after one turn');
+  assert.equal(asked.imagesFromEarlier, true, 'the model was not told it is the earlier picture');
+  // Only the turn it was attached to shows it in the log, though — a thumbnail
+  // repeated under every follow-up would read as sending it again.
+  assert.equal(await review.evalJs(
+    'document.querySelectorAll(".tutor .msg.user .shots").length'), 1,
+  'the thumbnail was repeated under the follow-up');
+});
+
 // One chat, kept and navigable. It used to be a different thread per card,
 // silently swapped as you moved, so a question asked two cards ago was
 // somewhere you could not get back to.
@@ -1467,8 +1319,7 @@ await check('a chat survives a reload and is the one you come back to', async ()
   await review.waitFor('!window.__stale && !!document.getElementById("reveal")',
     'the reloaded card');
   await review.evalJs('document.getElementById("reveal").click()');
-  await review.waitFor('!document.getElementById("tutorLauncher").hidden', 'the launcher');
-  await review.evalJs('document.getElementById("tutorLauncher").click()');
+  await review.waitFor('!document.getElementById("tutorToggle").disabled', 'the Ask switch');
   await review.waitFor('!document.querySelector(".tutor").hidden', 'the drawer');
   await review.waitFor(
     'document.querySelectorAll(".tutor .msg .bubble").length > 0', 'the restored chat');

@@ -15,12 +15,16 @@ import { DEFAULT_LIMITS, reviewBadgeCount } from './srs.js';
 import {
   SIMP_FIRST, TRAD_FIRST, getHanziPref, setHanziPref, onHanziPref,
 } from './hanzi.js';
+import { getAskOpen, setAskOpen, onAskOpen, onTutorPresence } from './tutorstate.js';
+import { AI_NOTICES, getAiStatus, onAiStatus, openOptionsAt } from './aistatus.js';
+import { icon } from './icons.js';
 
 // id -> { label, href, count }. `count` names the badge this tab carries.
 export const VIEWS = [
   { id: 'review', label: 'Review', href: 'review.html', count: 'due' },
   { id: 'library', label: 'Library', href: 'wordlist.html', count: 'saved' },
   { id: 'guides', label: 'Guides', href: 'hsk.html' },
+  { id: 'placement', label: 'Level', href: 'placement.html' },
   { id: 'news', label: 'News', href: 'news.html' },
 ];
 
@@ -49,7 +53,9 @@ async function readCounts() {
  *   onSelect   optional (id) => void. Given, tabs become buttons and call this
  *              instead of navigating — the dashboard's iframe swap.
  *
- * Returns { setActive, refreshCounts }.
+ * Returns { setActive, refreshCounts, setAskAvailable }. The dashboard calls
+ * setAskAvailable for the frame it is showing, since that frame's tutor is in
+ * another document and cannot reach the button itself.
  */
 export function mountShell({ active, onSelect } = {}) {
   // Pages inside the dashboard's iframes still build the bar (so the page is
@@ -174,6 +180,82 @@ export function mountShell({ active, onSelect } = {}) {
   // Every page carries the toggle, so a flip on one has to show on the others.
   onHanziPref(paintScript);
 
+  // Ask. The tutor used to be a pill floating over the bottom-right corner of
+  // whatever you were reading — a second, page-level piece of chrome competing
+  // with the app's own. It is a switch in the bar now: press it and the drawer
+  // takes the right-hand side of the page, press it again and the page has it
+  // back. The bar itself never moves, so the app does not appear to jump every
+  // time you ask something.
+  //
+  // It is one bit for the whole profile (lib/tutorstate.js), which is what makes
+  // the drawer follow you from the review card to the library with the same
+  // conversation still in it.
+  const ask = el('button', 'zx-ask');
+  ask.type = 'button';
+  ask.id = 'tutorToggle';
+  ask.append(icon('chat', 15), el('span', null, 'Ask'));
+  ask.setAttribute('aria-pressed', 'false');
+  // Pages with no tutor at all (Options) never show it; the dashboard's views
+  // all have one, and each frame reports its own as it loads.
+  ask.hidden = !onSelect;
+  let askOpen = false;
+  function paintAsk() {
+    ask.classList.toggle('active', askOpen);
+    ask.setAttribute('aria-pressed', String(askOpen));
+    ask.title = ask.disabled
+      ? 'Reveal the answer before asking about this card'
+      : askOpen ? 'Close the tutor' : 'Ask the tutor about what you are reading';
+  }
+  function setAskAvailable(available) {
+    ask.hidden = false;
+    ask.disabled = !available;
+    paintAsk();
+  }
+  ask.addEventListener('click', () => {
+    askOpen = !askOpen;
+    paintAsk();
+    setAskOpen(askOpen);
+  });
+  getAskOpen().then((open) => { askOpen = open; paintAsk(); });
+  onAskOpen((open) => { askOpen = open; paintAsk(); });
+  // A tutor in this document announces itself directly; inside the dashboard the
+  // drawer is in an iframe, so the frame posts up and newtab.js relays it.
+  onTutorPresence(setAskAvailable);
+  paintAsk();
+
+  // The AI notice. Four features run on a model, and every one of them used to
+  // discover a missing or rejected key by failing inside itself, with a
+  // sentence only that page showed — so a learner who had never pasted a key
+  // met "could not reach the examiner" and had nothing to act on. The state is
+  // the app's (lib/aistatus.js), so the bar wears it, on every page, until it
+  // is dealt with.
+  //
+  // It is not shown for a deployment that pays for its own calls: nagging
+  // somebody to paste a key they do not need is worse than saying nothing.
+  const notice = el(onSelect ? 'button' : 'a', 'zx-notice');
+  if (onSelect) notice.type = 'button';
+  notice.hidden = true;
+  notice.append(icon('warn', 14), el('span', 'zx-notice-text'));
+  let noticeTarget = 'ai';
+
+  function paintNotice(status) {
+    const shown = AI_NOTICES[status.code];
+    notice.hidden = !shown;
+    if (!shown) return;
+    noticeTarget = shown.target;
+    notice.querySelector('.zx-notice-text').textContent = shown.label;
+    notice.title = shown.detail;
+    notice.setAttribute('aria-label', `${shown.label}. ${shown.detail}`);
+    if (!onSelect) notice.href = `options.html#${shown.target}`;
+  }
+
+  // Straight to the field, not to the top of a long settings page: the point of
+  // pressing this is to fix the thing it just named. A standalone page is an
+  // <a> and navigates; the dashboard opens Options as a tab of its own.
+  if (onSelect) notice.addEventListener('click', () => openOptionsAt(noticeTarget, { newTab: true }));
+  getAiStatus().then(paintNotice);
+  onAiStatus(paintNotice);
+
   // Settings is deliberately not a tab: it is a place you visit and come back
   // from, not one of the things you study.
   const settings = el(onSelect ? 'button' : 'a', 'zx-settings', 'Options');
@@ -185,7 +267,32 @@ export function mountShell({ active, onSelect } = {}) {
     settings.href = 'options.html';
   }
 
-  header.append(brand, nav, el('div', 'zx-spacer'), script, settings);
+  // The app is a viewport-height shell: the bar, and under it a row holding the
+  // page and — when it is open — the tutor drawer beside it.
+  //
+  // The drawer used to be fixed over the right-hand side with the body padded
+  // out of its way, which left the document's own scrollbar running down the
+  // outside of it: a scrollbar that looked like the chat's and scrolled the
+  // article. The page scrolls in its own column now and the drawer is a sibling
+  // of it, so the scrollbar stops where the drawer starts and belongs to the
+  // thing it is next to. Everything the page rendered moves into that column;
+  // <script> elements stay where they are, since a moved script is a question
+  // nobody needs to think about.
+  const main = el('div', 'zx-main');
+  const page = el('div', 'zx-page');
+  // The document itself no longer scrolls, so the column has to be reachable
+  // from the keyboard or Page Down stops working the moment the drawer is part
+  // of the layout. This is the standard fix for a scrollable region.
+  page.tabIndex = 0;
+  page.append(...[...document.body.childNodes].filter((n) => n.nodeName !== 'SCRIPT'));
+  main.append(page);
+  // A tutor that mounted before the shell (no page does today, but the order is
+  // not enforced anywhere) is moved into the row rather than left behind.
+  for (const drawer of document.querySelectorAll('.tutor-drawer')) main.append(drawer);
+  document.body.classList.add('zx-shell');
+  document.body.append(main);
+
+  header.append(brand, nav, el('div', 'zx-spacer'), notice, script, ask, settings);
   document.body.prepend(header);
 
   function setActive(id) {
@@ -216,5 +323,5 @@ export function mountShell({ active, onSelect } = {}) {
     if (area === 'sync' && (changes.newPerDay || changes.maxPerDay)) refreshCounts();
   });
 
-  return { setActive, refreshCounts };
+  return { setActive, refreshCounts, setAskAvailable };
 }
