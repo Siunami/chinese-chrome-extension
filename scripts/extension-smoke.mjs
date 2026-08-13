@@ -508,6 +508,14 @@ async function openPage(page) {
 
   // Debug affordance, off unless ZX_SHOTS names a directory: the assertions
   // can all pass on a page that looks broken.
+  // Screenshots are taken at whatever size Chrome defaults to, which is not
+  // the size a library of 97 cards is actually read at.
+  async function setViewport(width, height) {
+    await cdp('Emulation.setDeviceMetricsOverride', {
+      width, height, deviceScaleFactor: 1, mobile: false,
+    });
+  }
+
   async function shot(name) {
     if (!process.env.ZX_SHOTS) return;
     const { data } = await cdp('Page.captureScreenshot', { format: 'png' });
@@ -516,7 +524,7 @@ async function openPage(page) {
 
   return {
     page, evalJs, waitFor, popupHtml, popupBox, waitForPopup, pressKey, moveMouseTo,
-    dragSelect, clickAt, actionPoint, waitForAction, settle, shot, errors,
+    dragSelect, clickAt, actionPoint, waitForAction, settle, shot, setViewport, errors,
     close: () => ws.close(),
   };
 }
@@ -1005,6 +1013,81 @@ await check('a reply can itself be highlighted for a follow-up', async () => {
   assert.match(asked.context.section, /previous answer/,
     'the follow-up was framed as being about the page, not the conversation');
 });
+// A library of two cards fits anything. This bug only showed up at real size:
+// every column but Definition was nowrap, so the table sized itself past the
+// page and spilled Next and the delete button onto the background. Seed a
+// realistic deck and assert the table stays inside its container.
+const BULK = [];
+for (let i = 0; i < 97; i++) {
+  const sentence = i % 5 === 2;
+  BULK.push({
+    cardType: sentence ? 'sentence' : 'word',
+    simp: sentence ? `看了一场电影${i}` : `不一样${i}`,
+    trad: sentence ? '' : '不一樣',
+    pinyin: sentence ? 'kàn le yī chǎng diànyǐng' : 'bù yī yàng',
+    defs: sentence ? 'Watched a movie. (literally: Saw a movie.)' : 'different; distinctive; unlike',
+    savedAt: 1, lastSavedAt: 1 + i, touches: i % 4 === 0 ? 3 : 1,
+    srs: i % 3 === 0 ? null
+      : { reps: 1, lapses: 0, ease: 2.5, intervalDays: 1, due: Date.now() + 86400000 },
+  });
+}
+
+await check('a full library fits its column without overflowing', async () => {
+  await library.setViewport(1365, 900);
+  await library.evalJs(`chrome.storage.local.set({ wordlist: ${JSON.stringify(BULK)} })`);
+  await library.evalJs('location.reload()');
+  await library.waitFor('document.querySelectorAll("#list tbody tr").length > 20', 'the rows');
+
+  const m = await library.evalJs(`(() => {
+    const list = document.getElementById('list');
+    const table = list.querySelector('table');
+    const content = document.querySelector('.zx-content');
+    const defs = [...document.querySelectorAll('#list tbody tr:first-child td')][3];
+    return {
+      overflow: table.scrollWidth - list.clientWidth,
+      pastContent: Math.round(table.getBoundingClientRect().right
+        - content.getBoundingClientRect().right),
+      defWidth: Math.round(defs.getBoundingClientRect().width),
+      headerCells: document.querySelectorAll('#list thead th').length,
+    };
+  })()`);
+  assert.ok(m.overflow <= 1, `the table overflows its container by ${m.overflow}px`);
+  assert.ok(m.pastContent <= 0, `the table spills ${m.pastContent}px past the page column`);
+  // The column that carries the meaning must not be the one that gets crushed.
+  assert.ok(m.defWidth >= 150, `the definition column collapsed to ${m.defWidth}px`);
+  assert.equal(m.headerCells, 8, 'unexpected column count');
+  assert.deepEqual(library.errors, []);
+});
+
+// Narrower than the table's floor it must scroll inside #list rather than
+// squeezing a column to nothing — which is what stacked the header one letter
+// per line at 680px.
+await check('a narrow window scrolls the table instead of crushing it', async () => {
+  await library.setViewport(680, 900);
+  await library.evalJs('location.reload()');
+  await library.waitFor('document.querySelectorAll("#list tbody tr").length > 20', 'the rows');
+  const m = await library.evalJs(`(() => {
+    const list = document.getElementById('list');
+    const defs = [...document.querySelectorAll('#list tbody tr:first-child td')][3];
+    return {
+      scrolls: list.scrollWidth > list.clientWidth,
+      pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      defWidth: Math.round(defs.getBoundingClientRect().width),
+    };
+  })()`);
+  assert.equal(m.scrolls, true, 'the table should scroll inside #list');
+  assert.ok(m.pageOverflow <= 1, `the page itself scrolls sideways by ${m.pageOverflow}px`);
+  assert.ok(m.defWidth >= 110, `the definition column collapsed to ${m.defWidth}px`);
+});
+
+await library.setViewport(1365, 900);
+await library.shot('library-wide');
+await library.setViewport(880, 900);
+await library.shot('library-narrow');
+await library.setViewport(680, 900);
+await library.shot('library-tiny');
+await library.setViewport(1365, 900);
+
 await check('wordlist.html raised no page errors', () => assert.deepEqual(library.errors, []));
 library.close();
 

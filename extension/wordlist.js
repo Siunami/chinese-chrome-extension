@@ -243,7 +243,9 @@ function render(words) {
   const table = document.createElement('table');
   const thead = document.createElement('thead');
   const hrow = document.createElement('tr');
-  for (const h of ['Card', 'Trad.', 'Pinyin', 'Definition', 'Saved', '×', 'Progress', 'Next', '']) {
+  // The look-up count used to be its own column headed "×", which read as a
+  // delete column and was empty for most rows. It belongs with the date.
+  for (const h of ['Card', 'Trad.', 'Pinyin', 'Definition', 'Saved', 'Progress', 'Next', '']) {
     const th = document.createElement('th');
     th.textContent = h;
     hrow.append(th);
@@ -264,20 +266,21 @@ function render(words) {
       ['pinyin', w.pinyin],
       ['', w.defs],
       ['meta', fmtDate(savedAt(w))],
-      ['meta', (w.touches || 1) > 1 ? `${w.touches}×` : ''],
     ];
     cells.forEach(([cls, text], cellIndex) => {
       const td = document.createElement('td');
       if (cls) td.className = cls;
-      // The two hanzi columns are hoverable; everything else is plain text.
-      if (cls === 'hanzi' && text) td.append(lookup.hoverable('span', null, text));
-      else td.textContent = text;
       if (cellIndex === 0) {
+        // Headword, badge and speaker share one flex line so the button stops
+        // dropping below the text as soon as the column gets narrow.
+        const wrap = document.createElement('div');
+        wrap.className = 'card-cell';
+        wrap.append(lookup.hoverable('span', null, text));
         if (sentenceCard) {
           const badge = document.createElement('span');
           badge.className = 'type-badge';
           badge.textContent = 'Sentence';
-          td.append(badge);
+          wrap.append(badge);
         }
         const speak = document.createElement('button');
         speak.className = 'speak';
@@ -288,7 +291,17 @@ function render(words) {
           event.stopPropagation();
           chrome.runtime.sendMessage({ type: 'speak', text: w.simp, slow: event.shiftKey });
         });
-        td.append(speak);
+        wrap.append(speak);
+        td.append(wrap);
+      } else if (cls === 'hanzi' && text) {
+        // The other hanzi column is hoverable too; the rest are plain text.
+        td.append(lookup.hoverable('span', null, text));
+      } else {
+        td.textContent = text;
+      }
+      // How many times this word was looked up, folded in beside its date.
+      if (cls === 'meta' && (w.touches || 1) > 1) {
+        td.append(el('span', 'touches', ` · ${w.touches}×`));
       }
       tr.append(td);
     });
