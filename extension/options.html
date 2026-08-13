@@ -179,12 +179,20 @@
   <div class="section" id="sync">
     <h2>Phone sync</h2>
     <div id="syncSetup" hidden>
-      <p class="note section-note">Review your flashcards on your phone. Cards sync
-         through a small Cloudflare Worker. No account needed: your browser
-         generates a private pairing code.</p>
+      <p class="note section-note">Review your flashcards on your phone, and turn on
+         the news digest, the tutor, the placement interview and sentence
+         translation. All five run through a small Cloudflare Worker that
+         <strong>you deploy to your own account</strong> — there is no shared server,
+         so your cards and your API key never pass through anyone else's. It takes
+         about two minutes and the free tier covers it:
+         <a href="https://github.com/Siunami/chinese-chrome-extension#phone-sync-flashcards-on-your-phone"
+            target="_blank" rel="noopener">the setup steps are here</a>.</p>
+      <p class="note section-note">Everything else — the hover popup, the dictionary,
+         example sentences, the HSK guides, saving words and reviewing them — works
+         without any of this, and always has.</p>
       <div class="row">
         <label for="syncServer">Sync server URL</label>
-        <input type="url" id="syncServer" size="30" placeholder="https://…workers.dev">
+        <input type="url" id="syncServer" size="30" placeholder="https://….workers.dev">
       </div>
       <div class="button-row">
         <button type="button" class="primary" id="syncEnable">Enable phone sync</button>

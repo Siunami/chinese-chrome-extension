@@ -18,7 +18,7 @@
 // a week.
 
 import { buildProfile } from './lib/profile.js';
-import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './lib/sync.js';
+import { getSyncMeta, hasDefaultServer, pairWith } from './lib/sync.js';
 import { postAi } from './lib/aistatus.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
@@ -468,10 +468,11 @@ async function generate({ topic = null } = {}) {
   }
 }
 
-// Reading news rides on the same capability token as phone sync. If the user
-// never enabled sync, offer to create one right here. The second half of setup
-// — an AI key — lives in Options, and the Worker's 503 names it, so this only
-// has to get them past the token.
+// Reading news rides on the same capability token as phone sync, against a
+// Worker the learner deploys themselves. In the shipped build there is no
+// server yet, so this explains what one is for and sends them to Options,
+// where the URL field and the setup steps live. A self-hosted build that set
+// DEFAULT_SERVER_URL can still do it in one click.
 function showSetup() {
   appEl.replaceChildren();
   toolbar('blocked');
@@ -479,25 +480,26 @@ function showSetup() {
   const box = el('div', 'setup');
   box.append(el('p', null,
     'Your personalized news is written by AI, matched to the words you study. '
-    + 'Enabling it creates a private token — only word statistics (which words '
-    + 'you study and struggle with) are ever sent, never page content or '
-    + 'browsing history.'));
+    + 'It runs through a small Cloudflare Worker you deploy to your own account '
+    + '— about two minutes on the free tier — so your words and your API key '
+    + 'never pass through anyone else\'s server.'));
+  box.append(el('p', null,
+    'Only word statistics are ever sent: which words you study and which ones '
+    + 'you keep failing. Never page content, never browsing history.'));
   box.append(el('p', null,
     'You will also need your own AI API key, pasted once into the extension\'s '
     + 'Options page. It pays for your digests and nobody else\'s.'));
-  const btn = el('button', 'primary', 'Enable news');
-  btn.type = 'button';
-  btn.addEventListener('click', async () => {
-    await chrome.storage.local.set({
-      syncMeta: { token: newToken(), serverUrl: DEFAULT_SERVER_URL, cursor: 0, lastPushAt: 0 },
-    });
-    chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
-    load();
-  });
-  const options = el('button', 'starter', 'Open Options');
+  if (hasDefaultServer()) {
+    const btn = el('button', 'primary', 'Enable news');
+    btn.type = 'button';
+    btn.addEventListener('click', async () => { await pairWith(); load(); });
+    box.append(btn);
+  }
+  const options = el('button', hasDefaultServer() ? 'starter' : 'primary',
+    hasDefaultServer() ? 'Open Options' : 'Set it up in Options');
   options.type = 'button';
   options.addEventListener('click', () => chrome.runtime.openOptionsPage());
-  box.append(btn, options);
+  box.append(options);
   appEl.append(box);
 }
 

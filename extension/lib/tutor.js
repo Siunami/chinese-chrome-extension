@@ -17,7 +17,7 @@
 // passage is then tracked with the CSS Custom Highlight API so it never
 // disturbs the hoverable spans underneath.
 
-import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './sync.js';
+import { getSyncMeta, hasDefaultServer, pairWith } from './sync.js';
 import { postAi } from './aistatus.js';
 import { packChats } from './chatlog.js';
 import { icon } from './icons.js';
@@ -987,29 +987,29 @@ export function createTutor(options) {
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  // The tutor rides on the same capability token as sync and the news digest.
+  // The tutor rides on the same capability token as sync and the news digest,
+  // against a Worker the learner deploys themselves.
   function showSetup() {
     logEl.replaceChildren();
     const box = el('div', 'tutor-empty');
     box.append(el('div', null,
-      'The tutor answers on your own AI API key, so your questions are never '
-      + 'anyone else\'s bill. Create a private token here, then paste a key into '
-      + 'the extension\'s Options page — everything else on this page works '
-      + 'without either.'));
-    const btn = el('button', 'starter', 'Enable the tutor');
-    btn.type = 'button';
-    btn.addEventListener('click', async () => {
-      await chrome.storage.local.set({
-        syncMeta: { token: newToken(), serverUrl: DEFAULT_SERVER_URL, cursor: 0, lastPushAt: 0 },
-      });
-      chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
-      renderChat();
-    });
-    const options = el('button', 'starter', 'Open Options');
+      'The tutor runs through a small Cloudflare Worker you deploy to your own '
+      + 'account, and answers on your own AI API key — so your questions are '
+      + 'never anyone else\'s bill and never cross anyone else\'s server. Set the '
+      + 'Worker up in Options (about two minutes), paste a key there too, and '
+      + 'everything else on this page keeps working without either.'));
+    const wrap = el('div', 'starters');
+    if (hasDefaultServer()) {
+      const btn = el('button', 'starter', 'Enable the tutor');
+      btn.type = 'button';
+      btn.addEventListener('click', async () => { await pairWith(); renderChat(); });
+      wrap.append(btn);
+    }
+    const options = el('button', 'starter',
+      hasDefaultServer() ? 'Open Options' : 'Set it up in Options');
     options.type = 'button';
     options.addEventListener('click', () => chrome.runtime.openOptionsPage());
-    const wrap = el('div', 'starters');
-    wrap.append(btn, options);
+    wrap.append(options);
     box.append(wrap);
     logEl.append(box);
   }

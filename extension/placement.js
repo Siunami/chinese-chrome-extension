@@ -20,7 +20,7 @@ import { buildProfile } from './lib/profile.js';
 import { levelLadder } from './lib/progress.js';
 import { createLookup } from './lib/lookup.js';
 import { mountShell } from './lib/shell.js';
-import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './lib/sync.js';
+import { getSyncMeta, hasDefaultServer, pairWith } from './lib/sync.js';
 import {
   AI_BAD_KEY, AI_NO_KEY, AI_NO_QUOTA, AI_NOTICES, AI_STALE_SERVER,
   openOptionsAt, postAi,
@@ -273,20 +273,23 @@ function renderInterview() {
       .includes(run.errorCode);
     const box = el('div', 'error');
     box.append(el('p', null, run.error === 'not paired'
-      ? 'The interview runs on the same private token as the tutor and sync, and there '
-        + 'is not one on this device yet.'
+      ? 'The interview runs through a Cloudflare Worker you deploy to your own '
+        + 'account, on the same private token as the tutor and phone sync — and '
+        + 'there is not one on this device yet. It takes about two minutes to set '
+        + 'up, and keeps your answers off anyone else\'s server.'
       : settled ? run.error
         : `Could not reach the examiner: ${run.error}`));
     const actions = el('div', 'row');
     if (run.error === 'not paired') {
-      actions.append(button('primary', 'Enable it', async () => {
-        await chrome.storage.local.set({
-          syncMeta: { token: newToken(), serverUrl: DEFAULT_SERVER_URL, cursor: 0, lastPushAt: 0 },
-        });
-        chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
-        retry();
-      }));
-      actions.append(button('', 'Open Options', () => chrome.runtime.openOptionsPage()));
+      if (hasDefaultServer()) {
+        actions.append(button('primary', 'Enable it', async () => {
+          await pairWith();
+          retry();
+        }));
+      }
+      actions.append(button(hasDefaultServer() ? '' : 'primary',
+        hasDefaultServer() ? 'Open Options' : 'Set it up in Options',
+        () => chrome.runtime.openOptionsPage()));
     } else if (settled) {
       // Pressing Try again against a rejected key just spends another minute
       // being told the same thing. Send them where the fix is instead — and

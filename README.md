@@ -234,8 +234,10 @@ headless Chrome, so they cannot quietly stop being true.)*
 
 ## Install
 
-Two minutes, no build step, no account. Everything in the **Features** list
-above except the four AI features works the moment it loads.
+Two minutes, no build step, no account, no server. Everything in the
+**Features** list above works the moment it loads, except phone sync and the
+four AI features — those need a Cloudflare Worker you deploy yourself, and are
+the only parts that send anything anywhere.
 
 1. Download this repo — **Code → Download ZIP** on GitHub and unzip it, or:
 
@@ -261,26 +263,32 @@ the Web Store. Keep the folder where it is — Chrome loads it from that path.
 
 ### Turning on the AI features (optional, one API key)
 
-The news digest, the study-guide tutor, and English backs for sentences the
-dictionary cannot translate are written by a language model. They run on
-**your own API key**, so nobody is paying for anyone else's usage:
+The news digest, the study-guide tutor, the placement interview, and English
+backs for sentences the dictionary cannot translate are written by a language
+model. They need two things, both yours: **a Worker to run them through** and
+**an API key to pay for them**.
 
-1. Get an [OpenAI API key](https://platform.openai.com/api-keys) (a fal.ai key
+1. [Deploy the Worker](#phone-sync-flashcards-on-your-phone) to your own
+   Cloudflare account — about two minutes on the free tier, same steps as phone
+   sync, and one deployment serves both.
+2. Get an [OpenAI API key](https://platform.openai.com/api-keys) (a fal.ai key
    also works). It starts with `sk-`.
-2. Open the extension's **Options** page — the puzzle-piece menu in Chrome's
-   toolbar → Zhongwen Explorer → ⋮ → Options — and paste the key under
-   **AI features**.
-3. That's it. Open a new tab and try **News → Generate**, sit the **Level**
-   placement interview, or open the HSK guides and ask the tutor a question.
+3. Open the extension's **Options** page — the puzzle-piece menu in Chrome's
+   toolbar → Zhongwen Explorer → ⋮ → Options — paste your Worker's URL under
+   **Phone sync**, and the key under **AI features**.
+4. Open a new tab and try **News → Generate**, sit the **Level** placement
+   interview, or open the HSK guides and ask the tutor a question.
 
 **Where the key goes.** It is stored in your browser's local extension storage
-and sent — only on those model-backed requests — to the sync Worker, which
-forwards it to OpenAI and never writes it to a database or a log. If you would
-rather not route a key through a Worker somebody else operates, [run your own
-Worker](#phone-sync-flashcards-on-your-phone) (it's ~20 lines of `wrangler` and
-a free Cloudflare account) and point the extension at it; that is the same code
-in `worker/`. Either way you can revoke the key from your OpenAI dashboard at
-any time, and every non-AI feature keeps working without one.
+and sent — only on those model-backed requests — to your own Worker, which
+forwards it to OpenAI to authorise that one call and never writes it to a
+database or a log. Nobody else's infrastructure is in the path. You can revoke
+it from your OpenAI dashboard at any time, and every non-AI feature keeps
+working without one.
+
+If you would rather not paste a key on every install, a Worker only you use can
+hold one instead: drop `REQUIRE_USER_KEY` from `wrangler.jsonc` and put the key
+in `wrangler secret`. See [Where the key comes from](#where-the-key-comes-from).
 
 **Cost.** Small. A news digest is one model call and is cached for 12 hours; the
 tutor and the translator are short calls with hourly caps (40 and 200 per hour).
@@ -314,12 +322,16 @@ deploy`, and the app will tell you if you forget.
 
 ### What runs where
 
-| Feature | Needs a key | Needs the Worker |
+| Feature | Needs a key | Needs a Worker you deployed |
 | --- | --- | --- |
 | Hover popup, dictionary, example sentences, HSK guides | no | no |
 | Saving words, flashcards, SRS review | no | no |
 | Phone sync (the PWA) | no | yes |
-| News digest, tutor, sentence translation | **yes, yours** | yes |
+| News digest, tutor, placement interview, sentence translation | **yes, yours** | yes |
+
+There is no shared server: the right-hand column means *your* Cloudflare
+account, deployed from `worker/` in about two minutes. Everything in the first
+two rows — which is most of what this is — never touches a network.
 
 There is no paid speech service anywhere in this: reading words aloud uses
 `chrome.tts`, which is free and runs on your machine.
@@ -348,10 +360,18 @@ deck shows a check, and tapping it removes the card. It fetches the same
 dictionary the extension bundles (a one-time ~13 MB download, cached for
 offline use).
 
-**You do not have to deploy anything.** The extension ships pointed at a
-running Worker (`DEFAULT_SERVER_URL` in `extension/lib/sync.js`), so pairing is
-one click in Options. Deploy your own if you would rather your cards and your
-API key not pass through someone else's account — same code, ~2 minutes:
+**Self-hosted, and only self-hosted.** `DEFAULT_SERVER_URL` in
+`extension/lib/sync.js` is empty on purpose: the extension ships pointed at no
+server at all. Phone sync and the four AI features need one, and it is yours —
+deploy it to your own Cloudflare account, about two minutes on the free tier.
+
+It used to ship pointed at a running deployment, which made pairing one click
+and made whoever ran that deployment the custodian of every installer's deck and
+the proxy for their API key. That is a reasonable arrangement between an author
+and their own phone, and the wrong one to hand to strangers who cannot see whose
+account is on the other end of it. Nothing about the shipped extension depends
+on it either: the hover popup, the dictionary, the example sentences, the study
+guides, saving words and reviewing them never needed a server and still do not.
 
 ```sh
 node scripts/sync-shared.mjs              # copies shared libs + dictionary into pwa/
@@ -361,13 +381,18 @@ npx wrangler d1 execute zhongwen-sync --remote --file=schema.sql
 npx wrangler deploy                       # prints your https://….workers.dev URL
 ```
 
-Then either paste that URL into the options page under **Phone sync**, or edit
-`DEFAULT_SERVER_URL` so every surface uses it by default. If you are the only
-person pairing with your Worker, you can drop `REQUIRE_USER_KEY` from
-`wrangler.jsonc` and put the model key in `wrangler secret` instead of the
-options page — see [AI news digest](#ai-news-digest).
+Then paste that URL into the options page under **Phone sync** — or, if you are
+building the extension for yourself and would rather not paste it on every
+install, set `DEFAULT_SERVER_URL` to it once and every surface picks it up,
+including the one-click **Enable** buttons on the news, tutor and placement
+pages. (With no default those pages send you to Options instead, which is what a
+store build does.) If you are the only person pairing with your Worker, you can
+also drop `REQUIRE_USER_KEY` from `wrangler.jsonc` and put the model key in
+`wrangler secret` instead of the options page — see
+[AI news digest](#ai-news-digest).
 
-**What a shared Worker is protected by.** `REQUIRE_USER_KEY` settles the model
+**What a Worker is protected by**, if you do share yours with anyone.
+`REQUIRE_USER_KEY` settles the model
 bill — every AI call runs on the caller's own key — but D1 is still yours, and
 `/api/sync` has no model call behind it to make a caller think twice. So there
 are two limits underneath it. A pairing token self-provisions a user on first
@@ -1150,7 +1175,28 @@ length-sorted corpus and verifies matches fall on segmentation boundaries, so
 hovering 是 shows sentences using 是 as a word, not ones that merely contain
 是否.
 
-## Data licenses
+## Privacy
+
+As installed, this extension sends nothing anywhere: no server, no account, no
+analytics, no telemetry, no tracking. Phone sync and the AI features are the
+only things that transmit anything, they are off until you set them up, and what
+they talk to is a Cloudflare Worker on your own account.
+
+[docs/PRIVACY.md](docs/PRIVACY.md) is the full version — every piece of data,
+where it can go, and what never leaves the browser. It is written against the
+code rather than from a template, so anything it claims can be checked here.
+
+## License
+
+The code is MIT — see [LICENSE](LICENSE).
+
+**The bundled dictionary data is not.** `extension/data/` is derived from
+datasets published under share-alike terms that travel with the data into every
+copy of it, including a packaged extension. See
+[extension/data/LICENSE.md](extension/data/LICENSE.md) for the terms, the
+attribution, and what a fork has to keep.
+
+### Data licenses
 
 - Dictionary: [CC-CEDICT](https://www.mdbg.net/chinese/dictionary?page=cedict),
   CC BY-SA 4.0.

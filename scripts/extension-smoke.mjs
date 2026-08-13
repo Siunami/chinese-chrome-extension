@@ -864,6 +864,36 @@ dash.close();
 // made this a race decided by the order of everything above. The bug it guards
 // is a CSS rule beating `hidden`, so it sets `hidden` and looks at the pixels.
 const newsTab = await openPage('news.html');
+
+// The first thing every new install sees. The extension ships with no server —
+// DEFAULT_SERVER_URL is empty, because pointing it at somebody's deployment
+// makes them the custodian of every installer's deck — so the server-backed
+// features open on a setup screen instead of a one-click Enable that would
+// silently pair the learner with a stranger's Cloudflare account. The button
+// has to go to Options, and the one-click Enable must NOT be offered, since
+// there is nothing for it to pair with.
+await check('with no server deployed, news explains itself and points at Options', async () => {
+  // The deck gate is checked before the pairing gate, so there have to be
+  // enough words for the page to get as far as noticing there is no server.
+  await newsTab.evalJs(`chrome.storage.local.set({ wordlist: ${JSON.stringify(
+    Array.from({ length: 6 }, (_, i) => ({
+      cardType: 'word', simp: '朋友', trad: '朋友', pinyin: 'péng you', tones: '2,0',
+      defs: 'friend', savedAt: i + 1, lastSavedAt: i + 1, touches: 1, srs: null,
+    })),
+  )} })`);
+  await newsTab.evalJs('chrome.storage.local.remove(["syncMeta", "newsHistory"])');
+  await newsTab.evalJs('window.__stale = true');
+  await newsTab.evalJs('location.reload()');
+  await newsTab.waitFor('!window.__stale && !!document.querySelector(".setup")', 'the setup box');
+  const text = await newsTab.evalJs('document.querySelector(".setup").textContent');
+  assert.match(text, /your own account/, 'the setup box never says whose server it is');
+  const labels = await newsTab.evalJs(
+    'JSON.stringify([...document.querySelectorAll(".setup button")].map((b) => b.textContent))');
+  assert.match(labels, /Options/, 'no way through to the options page');
+  assert.doesNotMatch(labels, /Enable news/,
+    'offered one-click pairing with no server to pair to');
+});
+
 await check('the difficulty control is really hidden when it is hidden', async () => {
   await newsTab.waitFor('!!document.getElementById("app")', 'the digest container');
   assert.equal(await newsTab.evalJs(`(() => {

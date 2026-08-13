@@ -1,4 +1,6 @@
-import { DEFAULT_SERVER_URL, getAiKey, getSyncMeta, newToken, pairUrl } from './lib/sync.js';
+import {
+  DEFAULT_SERVER_URL, getAiKey, getSyncMeta, newToken, pairUrl, pairWith,
+} from './lib/sync.js';
 import {
   AI_BAD_KEY, AI_NO_KEY, AI_NO_QUOTA, AI_NOTICES, AI_UNPAIRED,
   clearAiFailure, getAiStatus, onAiStatus,
@@ -268,15 +270,12 @@ async function renderSync() {
 }
 
 syncEls.enable.addEventListener('click', async () => {
-  const serverUrl = syncEls.server.value.trim().replace(/\/+$/, '');
-  if (!/^https?:\/\/.+/.test(serverUrl)) {
+  // pairWith does the validating, so a URL typed here and one baked into a
+  // self-hosted build are accepted on exactly the same terms.
+  if (!await pairWith(syncEls.server.value)) {
     syncEls.server.focus();
     return;
   }
-  await chrome.storage.local.set({
-    syncMeta: { token: newToken(), serverUrl, cursor: 0, lastPushAt: 0 },
-  });
-  chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
   renderSync();
 });
 
