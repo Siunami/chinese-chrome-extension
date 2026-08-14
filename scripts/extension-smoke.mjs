@@ -535,7 +535,49 @@ await check('the interview sent the rubric, the deck and the transcript', async 
   assert.equal(second.answer, '我今天学习了中文。');
   assert.equal(typeof second.answeredLevel, 'number');
   assert.ok(second.history.length >= 1, 'the transcript did not travel');
+  assert.equal(first.script, 'simp', 'the turn never said which script to write in');
   assert.equal(calls[calls.length - 1].finish, true, 'the run never asked for a report');
+});
+
+// The interview was the one place the 简/繁 toggle did not reach: a traditional
+// reader was asked questions in simplified, and their 博物館 came back as a
+// correction saying the character should have been 馆 — a correction that is
+// not one, and that goes into the deck in the script they do not read. The
+// examiner is now told which script to write in, and the page converts what
+// comes back regardless, which is what this drives: the scripted examiner
+// answers in simplified whatever it is told.
+await check('the report and the interview follow the 简/繁 toggle', async () => {
+  await place.evalJs('document.querySelector(\'.zx-script-btn[data-pref="trad-first"]\').click()');
+  await place.waitFor(
+    'document.querySelector(".transcript .zh").textContent.includes("什麼")',
+    'the transcript in traditional');
+  assert.match(await place.evalJs('document.querySelector(".fix .zh").textContent'),
+    /我很高興/, 'a correction stayed in simplified for a traditional reader');
+  // The learner's own words are not rewritten: the "you wrote" line beside a
+  // correction is what they typed, not a converted copy of it.
+  assert.equal(await place.evalJs('document.querySelector(".fix .was").textContent'),
+    '我是很高兴');
+  await place.shot('placement-traditional');
+
+  // And a run started in traditional says so, so the examiner writes its next
+  // task in it rather than being left to guess.
+  await place.evalJs(
+    '[...document.querySelectorAll("#view button")].find(b => /Sit it again/.test(b.textContent)).click()');
+  await place.waitFor('document.querySelectorAll(".log .msg.examiner .zh").length > 0',
+    'the first question of the new run');
+  const calls = await (await fetch(`${base}/__placement`)).json();
+  assert.equal(calls[calls.length - 1].script, 'trad', 'the turn asked for the wrong script');
+  assert.match(await place.evalJs('document.querySelector(".log .msg.examiner .zh").textContent'),
+    /什麼/, 'the question was left in simplified');
+
+  // Put the page back: nothing was answered, so the abandoned run leaves the
+  // standing report alone, and the rest of the run reads simplified.
+  await place.evalJs(
+    '[...document.querySelectorAll("#view button")].find(b => /Stop the interview/.test(b.textContent)).click()');
+  await place.waitFor('!!document.querySelector("#view .headline")', 'the standing report');
+  await place.evalJs('document.querySelector(\'.zx-script-btn[data-pref="simp-first"]\').click()');
+  await place.waitFor(
+    'document.querySelector(".transcript .zh").textContent.includes("什么")', 'the flip back');
 });
 
 await check('a finished placement is what the page opens on next time', async () => {
@@ -550,6 +592,63 @@ await check('a finished placement is what the page opens on next time', async ()
   assert.deepEqual(again.errors, []);
   again.close();
 });
+// Sitting it a second time is the point of the thing: one placement is a
+// number, and a pile of them is the only evidence in the app that six months
+// of study moved anything. Two older sittings are planted here rather than
+// sat, because what is being checked is the history — that nothing is dropped,
+// that the line is drawn oldest-first, and that an old report still opens.
+await check('every past sitting is kept, charted, and openable', async () => {
+  const past = (at, level, over = {}) => JSON.stringify({
+    at, level, confidence: 'medium', studyLevel: level + 1, turns: 10,
+    comprehension: 2, production: 2,
+    perLevel: Array.from({ length: 9 }, (_, i) => ({
+      level: i + 1, probes: i + 1 <= level ? 2 : 0, score: i + 1 <= level ? 0.8 : null,
+      verdict: i + 1 <= level ? 'sustained' : 'untested',
+    })),
+    ...over,
+  });
+  // Older than the run just sat, and the older of the two has lost its
+  // transcript to the trim — as every sitting past the recent few will.
+  await place.evalJs(`chrome.storage.local.get('placementResults').then((r) => {
+    const kept = r.placementResults || [];
+    return chrome.storage.local.set({ placementResults: [...kept,
+      ${past(Date.UTC(2026, 2, 14), 3, { report: { summary: 'Getting there.' }, transcript: [{ level: 3, prompt: '你好吗？', answer: '很好', assess: { comprehension: 3, production: 2, errors: [], comment: 'ok' } }] })},
+      ${past(Date.UTC(2025, 10, 2), 1, { summary: 'Early days.' })}] });
+  })`);
+  const history = await openPage('placement.html');
+  await history.waitFor('!!document.querySelector(".trend-box")', 'the placement trend');
+
+  assert.equal(await history.evalJs('document.querySelectorAll(".tr-col").length'), 3,
+    'the chart lost a sitting');
+  assert.equal(await history.evalJs('document.querySelectorAll("table.hist tr").length'), 3,
+    'the table lost a sitting');
+  assert.match(await history.evalJs(
+    'document.querySelector(".trend-box").closest("section").querySelector(".sub").textContent'),
+  /Up 3 levels since/, 'the history did not say what moved');
+  // The oldest kept only its numbers, and the row says so before it is opened.
+  assert.match(await history.evalJs('document.querySelector("table.hist tr:last-child").textContent'),
+    /numbers only/);
+
+  // An old sitting opens its own report, and says it is not where you stand.
+  await history.evalJs(
+    'document.querySelector("table.hist tr:last-child button.link").click()');
+  await history.waitFor('/A past placement/.test(document.querySelector("h2").textContent)',
+    'the old report');
+  assert.equal(await history.evalJs('document.querySelector(".headline .level b").textContent'),
+    'HSK 1');
+  assert.ok(await history.evalJs('!!document.querySelector(".gone")'),
+    'a report with no transcript did not say so');
+
+  // And back, without a reload, to the placement that is actually current.
+  await history.evalJs(
+    '[...document.querySelectorAll("#view button")].find(b => /Back to the latest/.test(b.textContent)).click()');
+  await history.waitFor('document.querySelector(".headline .level b").textContent === "HSK 4"',
+    'the latest placement');
+  await history.shot('placement-history');
+  assert.deepEqual(history.errors, []);
+  history.close();
+});
+
 await check('placement.html raised no page errors', () => assert.deepEqual(place.errors, []));
 place.close();
 
@@ -913,11 +1012,19 @@ const digest = (title, extra = {}) => ({
   glossary: [{ word: '垃圾', pinyin: 'lā jī', meaning: 'rubbish' }],
   sources: [], ...extra,
 });
+// Anchored to midnight rather than to "three hours ago", because the day
+// headings are the thing being checked and a suite run at 1am would otherwise
+// file this morning's article under Yesterday and fail on the clock rather
+// than on the code. Noon today and noon yesterday are Today and Yesterday at
+// every hour the suite might be run at.
+// Never in the future, so an article does not read as written in an hour's
+// time when the suite runs in the morning.
+const noon = Math.min(new Date().setHours(12, 0, 0, 0), Date.now());
 const HISTORY = [
-  { id: '2', generatedAt: Date.now() - 3 * 60 * 60 * 1000, data: digest('海边的塑料越来越少') },
+  { id: '2', generatedAt: noon, data: digest('海边的塑料越来越少') },
   {
     id: '1',
-    generatedAt: Date.now() - 27 * 60 * 60 * 1000,
+    generatedAt: noon - 24 * 60 * 60 * 1000,
     data: digest('新的地铁线开始试运行', { topic: { label: '科技', query: '科技 新闻' } }),
   },
 ];

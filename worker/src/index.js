@@ -1209,6 +1209,31 @@ function wordList(value) {
     .map((w) => w.trim().slice(0, MAX_WORD_CHARS));
 }
 
+// The placements before this one, as one line: "HSK 2 (2026-03), HSK 3
+// (2026-06)". Clamped and re-dated here rather than trusted, like every other
+// list that arrives from a client and goes into a prompt — the dates are the
+// point of the line, so a nonsense timestamp drops its entry instead of
+// putting "HSK 3 (+275760-09)" in front of the model.
+const MAX_TRAIL = 10;
+
+function placementTrail(history) {
+  const rows = (Array.isArray(history) ? history : [])
+    .slice(-MAX_TRAIL)
+    .map((row) => {
+      if (!row || typeof row !== 'object') return null;
+      const level = Number(row.level);
+      if (!Number.isInteger(level) || level < 0 || level > 9) return null;
+      const at = Number(row.at);
+      const when = Number.isFinite(at) && at > 0 && at < 4102444800000
+        ? new Date(at).toISOString().slice(0, 7) : '';
+      const name = level === 0 ? 'below HSK 1' : `HSK ${level}`;
+      return when ? `${name} (${when})` : name;
+    })
+    .filter(Boolean);
+  // One row is the placement itself, which the line above already stated.
+  return rows.length > 1 ? rows.join(', ') : '';
+}
+
 function learnerBlock(body) {
   const profile = body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile)
     ? body.profile : null;
@@ -1225,6 +1250,11 @@ function learnerBlock(body) {
     // stating separately from the level the app is currently teaching at.
     lines.push(`- A placement interview put them at HSK ${Number(placed.level)}`
       + `${askText(placed.summary, 300) ? `: ${askText(placed.summary, 300)}` : '.'}`);
+    // And every earlier sitting, oldest first. A tutor that can see the line
+    // can answer "am I getting anywhere?" — the question a learner half a year
+    // in actually has — instead of restating today's number back at them.
+    const history = placementTrail(placed.history);
+    if (history) lines.push(`- Every placement they have sat, oldest first: ${history}.`);
   }
   const counts = [];
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
@@ -1419,6 +1449,7 @@ The interview is adaptive, and the client owns the ladder. It tells you which HS
 
 WRITING THE TASK
 - Write it in Mandarin, pitched at the level you picked. One task per turn, two or three sentences at most.
+- The message names the script the learner reads — simplified or traditional. Write the task, and every correction, in THAT script.
 - Vary what you ask for across the interview: answer a question about their life, react to a situation, retell something you just said, explain a preference and why, translate one short English sentence, or complete a sentence you start. Do not ask the same kind of thing twice in a row.
 - Levels 1-2 may carry a short English gloss in brackets after the Chinese. Level 3 and up must be Chinese only — reading the question is part of the test.
 - Lean on words the learner's deck says they know, so a stumble is about the level and not about one unlucky word. Where the deck lists words they keep failing, work one in when it fits naturally.
@@ -1431,6 +1462,7 @@ MARKING THE PREVIOUS ANSWER
 - Mark against the target level, not against a native speaker. A perfectly good HSK 2 answer to an HSK 5 task is a low production mark at 5 — that is the measurement working, not harshness.
 - Answering in English, in pinyin, or with "I don't know" is real evidence: mark production 0 and say so in the comment. Do not award marks for effort.
 - errors: up to three concrete ones. Quote the learner's own words in "span", give the corrected Chinese in "correction", and say what the rule is in one short English clause. Only real errors — do not invent them to look thorough, and do not list stylistic preferences as errors.
+- A character is never an error for being the other script's form of the right word. 博物館 is not a misspelling of 博物馆, and neither is a "correction" that only swaps one script for the other. Writing in the script the message names is correct by definition; mark the Chinese, not the characters it is written with.
 - comment: one short English sentence the learner will read afterwards. Specific, not "good job".
 
 THE FINAL TURN
@@ -1470,6 +1502,17 @@ function buildPlacementPrompt(body, allowed) {
   parts.push(allowed.length > 1
     ? `Allowed levels for this turn: ${allowed.join(', ')}. Suggested: HSK ${target}.`
     : `This turn must be aimed at HSK ${target}.`);
+
+  // Which script the learner reads is the app's 简/繁 toggle, and an examiner
+  // that is not told marks a traditional reader's 博物館 as a misspelling of
+  // 博物馆 — a "correction" that is wrong twice over: it is not an error, and
+  // saving it puts a card in their deck in the script they do not read.
+  parts.push(body.script === 'trad'
+    ? 'The learner reads and writes TRADITIONAL characters. Write this turn\'s task in '
+      + 'traditional. Their traditional forms are correct — never list one as an error and '
+      + 'never "correct" one to simplified. Write any correction in traditional too.'
+    : 'The learner reads and writes SIMPLIFIED characters. Write this turn\'s task, and any '
+      + 'correction, in simplified.');
 
   for (const rubric of rubrics) {
     const lines = [];

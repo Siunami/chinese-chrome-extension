@@ -56,7 +56,9 @@ headless Chrome, so they cannot quietly stop being true.)*
 - **Placement interview** — a dozen turns of Mandarin back-and-forth that end
   in an HSK level, a chart of which levels held and which came apart, and every
   correction the examiner wrote down, each saveable as a flashcard. The
-  questions lean on words your deck says you already know. See [Placement
+  questions lean on words your deck says you already know. Sit it as often as
+  you like: every sitting is kept and charted, so the answer to "did six months
+  of this move anything?" is a line rather than a feeling. See [Placement
   interview](#placement-interview).
 - **Example sentences** — up to 15 Tatoeba sentences per word (default 8),
   shortest first, with auto-generated pinyin and English translation.
@@ -538,7 +540,10 @@ own calls raises no banner at all. `tests/placement.test.mjs` covers the placeme
 interview from both ends — the ladder driven through the sequences of marks a
 real run produces (every shape of learner terminates, inside the turn cap; a
 level held above one that came apart is read as a gap rather than a placement;
-an unmarked turn is not scored as a zero), and the endpoint's guards, its
+an unmarked turn is not scored as a zero), the history it leaves behind (a new
+sitting never pushes an old one out; sittings past the recent few lose their
+transcript and keep their marks; the line the tutor is told reads oldest
+first), and the endpoint's guards, its
 separate hourly budget, and the two things the Worker must not let the model
 do: pick a level the ladder ruled out, and close an interview that has just
 started. `tests/provider-key.test.mjs` covers the thing that
@@ -871,8 +876,31 @@ ends in fifteen saveable corrections tells you what to do about it. **Study HSK
 n** points the guides at the first level you have not yet held.
 
 Stopping early is not failing: the marks so far are real, and a run abandoned
-at question eight still reports, at lower confidence. Results are kept locally
-(the last 20), and previous placements are listed under the current one.
+at question eight still reports, at lower confidence.
+
+**Sit it as often as you like, and every sitting is kept.** One placement is a
+number; a pile of them is the only thing in the app that measures rather than
+counts — the deck's totals go up whether or not the Chinese does. Under the
+current report is a chart of every interview you have ever sat, oldest on the
+left on the full nine-level scale, with a row per sitting under it: the date,
+the level, how many questions, how much to trust it. Any of them opens its own
+report. Above the chart is the arithmetic in a sentence — *up 2 levels since 14
+March, over 5 sittings* — and a drop is reported as a drop, with the honest
+gloss that one interview is a measurement with noise in it and is worth sitting
+again before you read much into it.
+
+Nothing is dropped: what is bounded is bulk, not count. The most recent 20
+sittings keep their full transcript and the examiner's written report; older
+ones keep their marks, their level ladder and the examiner's one-line summary,
+which is what the chart, the table and the tutor read. A sitting whose
+transcript has gone says so, both in the history row and in the report it
+opens. The whole history is in the [backup file](#backing-up-your-progress).
+
+The tutor is told the line, not just the latest number — every level you have
+placed at, oldest first, with the month of each. So "am I getting anywhere?"
+can be answered with what actually happened rather than by restating today's
+placement back at you. It is context, not instruction: the tutor is free to
+ignore it.
 
 It runs on your own Worker at `POST /api/placement`, on the same private
 pairing token and model provider as the tutor and the news digest, capped at 60
@@ -1029,7 +1057,9 @@ snapshot the news digest is built from (`extension/lib/profile.js`): the words
 in your review queue this week, the ones you reliably know, the ones you keep
 failing, what you saved most recently, and the size of the deck — plus the level
 the app has you at and, if you have sat one, what the [placement
-interview](#placement-interview) measured. The Worker turns that into a few
+interview](#placement-interview) measured, including every earlier sitting and
+the month of each, so a question about whether you are getting anywhere can be
+answered from the line rather than from today's number. The Worker turns that into a few
 lines at the top of the prompt, and the tutor is told to use it rather than
 recite it: explain at your level, build example sentences out of words you
 already hold, prefer a word from your review queue over a fresh one when either

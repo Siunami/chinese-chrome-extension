@@ -150,9 +150,11 @@ function placementTurn(body) {
     comprehension: held ? 3 : 0,
     production: held ? 3 : 0,
     // One correction per marked turn, so the report has something to save.
+    // The correction is a word that is spelled differently in the two scripts
+    // (高兴 / 高興), so the report has something whose script can be checked.
     errors: held ? [] : [{
-      span: '我是很好',
-      correction: '我很好',
+      span: '我是很高兴',
+      correction: '我很高兴',
       note: 'No 是 before an adjective.',
     }],
     vocabUsed: [],
@@ -163,6 +165,9 @@ function placementTurn(body) {
     // does once it has marked the answer above.
     level: (body.allowed || [body.target]).includes(body.target)
       ? body.target : (body.allowed || [body.target])[0],
+    // Always simplified, whatever `script` the turn asked for — a real model
+    // sometimes ignores it too, and the page converting anyway is the property
+    // the traditional check is about.
     reply: body.finish ? '今天就到这里，谢谢你！' : '你今天做了什么？',
     taskType: body.finish ? 'wind-down' : 'question',
     assess,

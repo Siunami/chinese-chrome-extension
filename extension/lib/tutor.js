@@ -22,7 +22,7 @@ import { postAi } from './aistatus.js';
 import { packChats } from './chatlog.js';
 import { icon } from './icons.js';
 import { buildProfile } from './profile.js';
-import { RESULTS_KEY } from './placement.js';
+import { RESULTS_KEY, placementDigest } from './placement.js';
 import { announceTutor, getAskOpen, onAskOpen, setAskOpen } from './tutorstate.js';
 
 const HIGHLIGHT_NAME = 'tutor-quote';
@@ -519,15 +519,13 @@ async function learnerProfile() {
   const profile = buildProfile(Array.isArray(wordlist) ? wordlist : []);
   if (Number.isInteger(hskLevel)) profile.hskLevel = hskLevel;
   // The interview is a measurement rather than the app's working guess, so it
-  // travels separately — with its summary, which says what came apart.
-  const [placed] = Array.isArray(results) ? results : [];
-  if (placed && Number.isInteger(placed.level)) {
-    profile.placement = {
-      level: placed.level,
-      at: placed.at || null,
-      summary: placed.report?.summary || '',
-    };
-  }
+  // travels separately — with its summary, which says what came apart, and the
+  // levels of the sittings before it. One placement says where they are; the
+  // sequence says whether the last few months moved anything, which is the
+  // difference between "you are at HSK 4" and "you were stuck at 3 for half a
+  // year and have just cleared 4". The tutor is free to ignore all of it.
+  const digest = placementDigest(Array.isArray(results) ? results : []);
+  if (digest) profile.placement = digest;
   return profile;
 }
 

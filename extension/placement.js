@@ -14,10 +14,13 @@
 
 import {
   MAX_TURNS, MIN_LEVEL, MAX_LEVEL,
-  estimate, planNext, rubricFor, loadResults, saveResult,
+  estimate, planNext, progression, rubricFor, loadResults, saveResult,
 } from './lib/placement.js';
 import { buildProfile } from './lib/profile.js';
-import { levelLadder } from './lib/progress.js';
+import {
+  SIMP_FIRST, convertDeep, getHanziPref, isTradFirst, onHanziPref,
+} from './lib/hanzi.js';
+import { levelLadder, levelTrend } from './lib/progress.js';
 import { createLookup } from './lib/lookup.js';
 import { mountShell } from './lib/shell.js';
 import { getSyncMeta, hasDefaultServer, pairWith } from './lib/sync.js';
@@ -73,11 +76,70 @@ const fmtDate = (ts) => new Date(ts).toLocaleDateString(undefined,
   { year: 'numeric', month: 'short', day: 'numeric' });
 
 // ---------------------------------------------------------------------------
+// Which script the interview is in
+// ---------------------------------------------------------------------------
+//
+// The 简/繁 toggle travels with each turn, so the examiner writes its tasks and
+// its corrections in the script the learner reads — without it, a traditional
+// reader who answered 博物館 was told the correct character is 馆, which is not
+// an error at all, and saving that correction put a simplified card in a deck
+// they read in traditional.
+//
+// The examiner is told, and what comes back is converted anyway: the toggle is
+// the app's promise rather than the model's, and it also has to apply to a
+// report sat before the toggle last moved. Conversion is at display time, so
+// what is stored stays exactly what the examiner wrote.
+let hanziPref = SIMP_FIRST;
+
+// The report currently on screen, kept unconverted so flipping 简/繁 repaints
+// it rather than converting an already-converted copy.
+let standing = null;
+
+// Every task asked so far, in the learner's script. Rebuilt rather than
+// appended to, so a flip mid-interview repaints the questions already on
+// screen along with the new one.
+async function reshowTurns() {
+  if (!run || !run.turns.length) return;
+  const shown = await convertDeep(run.turns.map((t) => t.prompt || ''), hanziPref);
+  run.turns.forEach((turn, i) => { turn.shown = shown[i]; });
+}
+
+// The examiner's half of a finished run, in the learner's script.
+//
+// The learner's own Chinese is left exactly as they typed it — their answers
+// in the transcript, and the span quoting them beside each correction. A
+// transcript that rewrites what you wrote is not a transcript, and a "you
+// wrote" line that is not what you wrote teaches nothing.
+async function inReadingScript(result) {
+  const transcript = result.transcript || [];
+  const shown = await convertDeep({
+    report: result.report || null,
+    prompts: transcript.map((t) => t.prompt || ''),
+    fixes: transcript.map((t) => (t.assess?.errors || []).map((e) => e.correction || '')),
+  }, hanziPref);
+  return {
+    ...result,
+    report: shown.report,
+    transcript: transcript.map((turn, i) => ({
+      ...turn,
+      prompt: shown.prompts[i],
+      assess: turn.assess && {
+        ...turn.assess,
+        errors: (turn.assess.errors || [])
+          .map((error, j) => ({ ...error, correction: shown.fixes[i][j] })),
+      },
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The run in progress
 // ---------------------------------------------------------------------------
 
 // turns: one per task asked, in order.
-//   { level, taskType, prompt, answer, assess }
+//   { level, taskType, prompt, shown, answer, assess }
+// `prompt` is what the examiner wrote and `shown` is that in the learner's
+// script; the stored transcript keeps the former.
 // `assess` arrives with the NEXT response — the call that marks this answer is
 // the same call that sets the following task — so the last turn of a run is
 // always unmarked until the reply after it lands.
@@ -129,6 +191,7 @@ async function step(answer = '') {
       answer,
       answeredLevel: last ? last.level : undefined,
       rubrics: allowed.map(rubricFor).filter(Boolean),
+      script: isTradFirst(hanziPref) ? 'trad' : 'simp',
       profile: run.profile,
       history: messagesFor(run.turns),
     });
@@ -157,9 +220,11 @@ async function step(answer = '') {
     level: data.level || target,
     taskType: data.taskType || '',
     prompt: data.reply,
+    shown: data.reply,
     answer: '',
     assess: null,
   });
+  await reshowTurns();
   render();
 }
 
@@ -205,6 +270,7 @@ function page(title, sub) {
 
 async function showIntro() {
   reading = true;
+  standing = null;
   const results = await loadResults();
   if (results.length) { showResult(results[0], results); return; }
 
@@ -250,8 +316,9 @@ function renderInterview() {
   for (const turn of run.turns) {
     const ask = el('div', 'msg examiner');
     const bubble = el('div', 'bubble');
-    bubble.append(lookup.hoverable('div', 'zh', turn.prompt));
-    bubble.append(speakButton(turn.prompt));
+    const asked = turn.shown || turn.prompt;
+    bubble.append(lookup.hoverable('div', 'zh', asked));
+    bubble.append(speakButton(asked));
     ask.append(bubble);
     log.append(ask);
     if (turn.answer) {
@@ -451,17 +518,71 @@ function transcriptBlock(result) {
   return box;
 }
 
-function historyBlock(results) {
+const levelName = (level) => (level ? `HSK ${level}` : 'Below HSK 1');
+// Checked against the stored result rather than the displayed one: converting
+// a report into the reading script leaves an empty transcript as an empty
+// array, and an empty array is not the same answer as "never kept one".
+const hasTranscript = (result) => Array.isArray(result?.transcript)
+  && result.transcript.length > 0;
+
+// What the sittings add up to, in a sentence. A number on its own cannot say
+// whether the last six months did anything; two numbers and the gap between
+// them can, and that is the whole reason the history is kept.
+//
+// A drop is reported as a drop. The honest gloss on one is that a placement is
+// a measurement with noise in it — a bad afternoon, an unlucky topic — not
+// that the learner went backwards, and saying so is not the same as hiding it.
+function movementLine({ first, latest, change, sittings }) {
+  if (change === null) return '';
+  const span = `since ${fmtDate(first.at)}`;
+  if (change > 0) {
+    return `Up ${change} level${change === 1 ? '' : 's'} ${span}: `
+      + `${levelName(first.level)} then, ${levelName(latest.level)} now, over ${sittings} sittings.`;
+  }
+  if (change === 0) {
+    return `Still ${levelName(latest.level)} ${span}, over ${sittings} sittings. `
+      + 'A level takes months of reading and reviewing to move — the deck is where '
+      + 'the work shows up first.';
+  }
+  return `Down ${-change} level${change === -1 ? '' : 's'} ${span}: `
+    + `${levelName(first.level)} then, ${levelName(latest.level)} now. `
+    + 'One interview is a measurement with noise in it — an unlucky topic or a tired '
+    + 'afternoon moves it a level. Sit it again before reading much into a drop.';
+}
+
+// Every sitting, oldest to newest, with each one openable. This is the part of
+// the app that answers "is any of this working?" — the deck's counters go up
+// whether or not the Chinese does, and the interview is the only thing here
+// that measures rather than counts.
+function historyBlock(results, current) {
   if (results.length < 2) return null;
   const box = el('section');
-  box.append(el('h3', null, 'Previous placements'));
+  box.append(el('h3', null, `Every placement (${results.length})`));
+  const trail = progression(results);
+  const moved = movementLine(trail);
+  if (moved) box.append(el('p', 'sub', moved));
+
+  const byTime = new Map(results.map((r) => [r.at, r]));
+  box.append(levelTrend(trail.points, {
+    onPick: (point) => {
+      const picked = byTime.get(point.at);
+      if (picked) showResult(picked, results);
+    },
+  }));
+
   const table = el('table', 'hist');
-  for (const past of results.slice(1)) {
+  for (const past of results) {
     const row = document.createElement('tr');
+    if (past.at === current?.at) row.dataset.here = '1';
+    const when = el('td', null);
+    when.append(button('link', fmtDate(past.at), () => showResult(past, results)));
     row.append(
-      el('td', null, fmtDate(past.at)),
-      el('td', 'lv', past.level ? `HSK ${past.level}` : 'Below HSK 1'),
-      el('td', null, `${past.turns} questions · ${past.confidence} confidence`),
+      when,
+      el('td', 'lv', levelName(past.level)),
+      el('td', null, `${past.turns} questions · ${past.confidence} confidence`
+        // Old sittings keep their numbers but not their transcript, and a row
+        // that opens onto a shorter report should say so before it is clicked.
+        + (hasTranscript(past) ? '' : ' · numbers only')),
     );
     table.append(row);
   }
@@ -469,14 +590,25 @@ function historyBlock(results) {
   return box;
 }
 
-async function showResult(result, cached) {
+async function showResult(stored, cached) {
   reading = true;
+  standing = stored;
   const results = cached || await loadResults();
-  const root = page('Your placement', '');
+  const result = await inReadingScript(stored);
+  // The latest sitting is where you stand; an older one is a thing you are
+  // looking back at, and the page says which it is rather than presenting a
+  // placement from March as though it were today's.
+  const latest = !results.length || results[0].at === stored.at;
+  const root = page(latest ? 'Your placement' : 'A past placement',
+    latest ? '' : `Sat ${fmtDate(stored.at)} · your latest is further down`);
   root.append(levelHeadline(result));
 
   const actions = el('div', 'row actions');
-  if (result.level) {
+  if (!latest) {
+    actions.append(button('primary', 'Back to the latest',
+      () => showResult(results[0], results)));
+  }
+  if (latest && result.level) {
     actions.append(button('primary', `Study HSK ${result.studyLevel}`, () => {
       chrome.storage.local.set({ hskLevel: result.studyLevel });
       // Inside the dashboard the frame asks the shell to switch tabs rather
@@ -513,8 +645,16 @@ async function showResult(result, cached) {
 
   const fixes = corrections(result);
   if (fixes) root.append(fixes);
-  root.append(transcriptBlock(result));
-  const history = historyBlock(results);
+  // Sittings past the most recent few keep their numbers and lose their
+  // transcript, so there is a report to open for every interview ever sat
+  // without the storage growing without bound. Say which one this is.
+  if (hasTranscript(stored)) root.append(transcriptBlock(result));
+  else if (!latest) {
+    root.append(el('p', 'gone',
+      'The questions and answers from this interview are no longer kept — only '
+      + 'the marks it produced. The last twenty sittings keep theirs in full.'));
+  }
+  const history = historyBlock(results, stored);
   if (history) root.append(history);
 }
 
@@ -531,9 +671,29 @@ async function start() {
   // Where to open: the last placement if there is one, otherwise whichever
   // guide they have been reading, otherwise the middle of the scale.
   const startLevel = previous?.level || hskLevel || 3;
+  standing = null;
   run = newRun(Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, startLevel)), buildProfile(wordlist));
   render();
   step();
 }
 
-showIntro();
+// The toggle repaints what is on screen, the same as everywhere else it
+// appears: a question already asked, or a report already sat.
+onHanziPref(async (pref) => {
+  hanziPref = pref;
+  if (run) {
+    await reshowTurns();
+    render();
+  } else if (standing) {
+    showResult(standing);
+  }
+});
+
+// The preference has to be in hand before the first paint: a standing report
+// is drawn in the learner's script, not redrawn into it a moment later.
+async function boot() {
+  hanziPref = await getHanziPref();
+  showIntro();
+}
+
+boot();

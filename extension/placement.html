@@ -129,10 +129,26 @@
       font-variant-numeric: tabular-nums; }
     .turn .why { margin-top: 2px; color: #666; font-size: 13px; line-height: 1.5; }
 
-    table.hist { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.hist { width: 100%; border-collapse: collapse; font-size: 13px;
+      margin-top: 14px; }
     table.hist td { padding: 5px 10px 5px 0; border-bottom: 1px solid #eee7da;
       color: #555; }
     table.hist td.lv { color: #222; font-weight: 650; }
+    /* The sitting currently on screen, so a history you opened from does not
+       leave you wondering which row you are reading. */
+    table.hist tr[data-here="1"] td { background: #fdf6e8; }
+    table.hist tr[data-here="1"] td.lv { color: #b5232b; }
+
+    /* A date that opens its report. A button rather than a row-wide click
+       target: the row is three cells of numbers, and only one of them is the
+       thing you would think to press. */
+    button.link { padding: 0; border: 0; background: none; color: #7f1920;
+      font-size: 13px; text-align: left; text-decoration: underline;
+      text-decoration-color: #d8c6a8; text-underline-offset: 2px; }
+    button.link:hover:not(:disabled) { background: none; color: #b5232b;
+      text-decoration-color: #b5232b; }
+
+    .gone { margin-top: 22px; color: #8a8272; font-size: 12.5px; line-height: 1.55; }
 
     .speak { display: inline-grid; place-items: center; vertical-align: middle;
       width: 25px; height: 25px; padding: 0; margin-left: 6px;
