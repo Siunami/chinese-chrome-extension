@@ -299,16 +299,28 @@ await check('the guides open the tutor as a drawer, not a docked column', async 
 // store both forms. A guide is written in simplified, so flipping to
 // traditional has to convert it — and by word, so 发 lands right.
 await check('flipping to traditional converts the guide, and back again', async () => {
-  await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
-  await hsk.waitFor('!!document.querySelector(".passage p")', 'the passage');
+  // Flipping the preference re-renders the guide, and the body is emptied to
+  // "Loading…" while the conversion goes to the dictionary and back. So "the
+  // passage is no longer what it was" is true of that gap as well as of the
+  // conversion, and a wait that settles for it goes on to read a guide with no
+  // passage in it at all. Every wait below is for a rendered passage, not
+  // merely a changed one.
+  const rendered = (test) => `(() => {
+    if (document.querySelector('#guide .empty')) return false;
+    const node = document.querySelector('.passage');
+    if (!node || !node.querySelector('p')) return false;
+    const text = node.textContent;
+    return ${test};
+  })()`;
   const passage = () => hsk.evalJs('document.querySelector(".passage").textContent');
+
+  await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
+  await hsk.waitFor(rendered('!!text'), 'the passage');
   const before = await passage();
   assert.ok(/[\u4e00-\u9fff]/.test(before), 'no Chinese in the guide to convert');
 
   await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "trad-first" })');
-  await hsk.waitFor(
-    `document.querySelector('.passage')?.textContent !== ${JSON.stringify(before)}`,
-    'the guide to convert');
+  await hsk.waitFor(rendered(`text !== ${JSON.stringify(before)}`), 'the guide to convert');
   const after = await passage();
   assert.notEqual(after, before, 'the guide did not change script');
   // Converted, not mangled: same length, still Chinese, no empty gaps.
@@ -317,9 +329,7 @@ await check('flipping to traditional converts the guide, and back again', async 
   assert.ok(/[\u4e00-\u9fff]/.test(after));
 
   await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
-  await hsk.waitFor(
-    `document.querySelector('.passage')?.textContent === ${JSON.stringify(before)}`,
-    'the guide to convert back');
+  await hsk.waitFor(rendered(`text === ${JSON.stringify(before)}`), 'the guide to convert back');
   assert.deepEqual(hsk.errors, []);
 });
 await check('hsk.html raised no page errors', () => assert.deepEqual(hsk.errors, []));
@@ -453,6 +463,10 @@ await check('the placement interview runs to a report and lands on the right lev
   await place.waitFor('!!document.querySelector("#view .panel")', 'the invitation');
   await place.evalJs(`chrome.storage.local.set({ syncMeta: {
     token: 'smoketokensmoketokensmoketoken', serverUrl: location.origin, cursor: 0, lastPushAt: 0 } })`);
+  // This run is the simplified baseline, and the toggle is one setting for the
+  // whole app — so pin it rather than inheriting whatever the checks above left
+  // behind, which is a way for a failure up there to come out as a puzzle here.
+  await place.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
   await place.evalJs(
     '[...document.querySelectorAll("#view button")].find(b => /Start/.test(b.textContent)).click()');
   await place.waitFor('document.querySelectorAll(".log .msg.examiner .zh").length > 0',
