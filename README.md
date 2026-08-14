@@ -85,6 +85,10 @@ headless Chrome, so they cannot quietly stop being true.)*
   guide, a generated news passage — is **converted**, by word rather than by
   character, because a character table cannot be right about both 头发 (頭髮)
   and 发现 (發現); segmenting first and swapping whole dictionary entries can.
+  Where there is no word to go on, the character table falls back on the
+  commonest mapping — and *staying the same* counts as one, so a character that
+  is almost always itself is left alone rather than rewritten into its rare
+  other form (家 is 家, not the 傢 of 傢俱).
   It was previously a dropdown buried in Options that only the popup honoured,
   which meant a traditional reader was studying the simplified form of their
   own cards on every other surface.

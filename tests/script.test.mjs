@@ -51,6 +51,23 @@ test('the other classic ambiguities come out right', () => {
   assert.equal(toTrad('干部'), '幹部');   // 干 as "trunk/cadre"
 });
 
+// A character that is nearly always itself, but not quite always. 家 is 家 in
+// both scripts except in 傢俱 and 傢伙, and both halves of the converter used to
+// get it wrong on their own: the character table counted only the pairs that
+// differ, so it held 家 → 傢, and the entry lookup took CEDICT's file order,
+// which lists 傢 家 above 家 家. A guide about 我的家 came out as 我的傢.
+test('a character that usually stays itself is left alone', () => {
+  assert.equal(toTrad('家'), '家');
+  assert.equal(toTrad('我的家'), '我的家');
+  assert.equal(toTrad('我家有三个人'), '我家有三個人');
+  assert.equal(toTrad('大家好'), '大家好');
+  assert.equal(scriptMap.toTrad.get('家'), undefined,
+    'the fallback table should have no opinion about a character that is itself');
+  // And the word that is the exception still converts.
+  assert.equal(toTrad('家具'), '家具');
+  assert.equal(toSimp('傢俱'), '家俱');
+});
+
 test('a full sentence keeps its punctuation, spacing and latin text', () => {
   const simp = '我喜欢学习中文，因为它很有意思。ABC 123!';
   const trad = toTrad(simp);
