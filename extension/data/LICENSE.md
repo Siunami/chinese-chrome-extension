@@ -1,6 +1,6 @@
 # Licenses for the bundled data
 
-The two files beside this one are not original work and are **not** covered by
+The three files beside this one are not original work and are **not** covered by
 the MIT license in the repository root. They are derived from third-party
 datasets published under share-alike terms, which follow the data into every
 copy of it — including the copies inside a packaged `.crx`, a Chrome Web Store
@@ -49,6 +49,30 @@ distinct Chinese sentence, drops rows with no Chinese in them, sorts the
 remainder by sentence length, and adds a generated pinyin column (column 2).
 The pinyin is computed here from CC-CEDICT readings and is not Tatoeba's work.
 The Chinese and English text is unmodified.
+
+## `hsk.tsv` — HSK 3.0 vocabulary + CC-CEDICT
+
+- **Vocabulary source:** the 11,092-row transcription in
+  [ivankra/hsk30](https://github.com/ivankra/hsk30), derived from the vocabulary
+  appendix of the Ministry of Education's 2021
+  *Standard for Chinese Proficiency in International Chinese Language
+  Education* (国际中文教育中文水平等级标准, GF 0025-2021).
+- **Vocabulary transcription license:** MIT; copyright © 2023 Ivan Krasilnikov,
+  © 2021 Shawky, and © 2021 Pleco Inc. The full MIT notice is in the source
+  repository linked above.
+- **Readings and definitions:** CC-CEDICT, under CC BY-SA 4.0 as described in
+  the `dict.tsv` section above.
+
+**Changes made.** `scripts/build-hsk.mjs` keeps each source row's stable id,
+level, spelling, part of speech, and official notation; chooses a primary
+simplified/traditional form for entries that give alternates or usage examples;
+and joins that identity to this project's bundled CC-CEDICT. The generated file
+adds display pinyin, tone numbers, and definitions. For 28 constructions
+without a complete dictionary headword, it supplies a short curated English
+definition; segmentation remains a last-resort build fallback. Because the
+remaining readings and definitions are an adaptation of CC-CEDICT, `hsk.tsv`
+is distributed under CC BY-SA 4.0 with the attribution above; the MIT
+attribution for the list transcription must also be kept.
 
 ---
 

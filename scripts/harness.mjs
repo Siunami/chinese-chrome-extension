@@ -335,9 +335,15 @@ const CHROME_SHIM = `
       saveWord: (msg) => {
         const e = msg.entry || {};
         if (!e.simp) return { ok: false };
-        const list = (store.local.wordlist || []).filter((w) => cardKey(w) !== cardKey(e));
+        const key = cardKey(e);
+        const old = (store.local.wordlist || []).find((w) => cardKey(w) === key);
+        const shared = (store.local.studyProgress || {})[key];
+        const srs = [old?.srs, shared].filter(Boolean).sort(
+          (a, b) => (b.reviewedAt || 0) - (a.reviewedAt || 0),
+        )[0] || null;
+        const list = (store.local.wordlist || []).filter((w) => cardKey(w) !== key);
         list.unshift({ ...e, cardType: e.cardType || 'word', savedAt: Date.now(),
-          lastSavedAt: Date.now(), touches: 1, srs: null });
+          lastSavedAt: Date.now(), touches: (old?.touches || 0) + 1, srs });
         store.local.wordlist = list;
         persist();
         return { ok: true, count: list.length };

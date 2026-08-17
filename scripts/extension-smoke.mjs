@@ -58,6 +58,42 @@ await check('hsk.html renders the full guide body', async () => {
     assert.ok(heads.includes(want), `missing "${want}"; got ${heads.join(', ')}`);
   }
 });
+await check('the guide exposes the complete level list without rendering thousands of rows', async () => {
+  await hsk.waitFor('document.querySelectorAll(".vocab-table tbody tr").length === 100',
+    'the first vocabulary page');
+  const state = await hsk.evalJs(`(() => ({
+    meta: document.querySelector('.vocab-meta')?.textContent,
+    rows: document.querySelectorAll('.vocab-table tbody tr').length,
+    practice: [...document.querySelectorAll('.practice')].map((a) => a.textContent),
+  }))()`);
+  assert.match(state.meta, /1–100 of 500/, state.meta);
+  assert.equal(state.rows, 100, 'the entire list was mounted instead of one page');
+  assert.ok(state.practice.some((label) => /500 HSK 1 words/.test(label)),
+    `missing the HSK 1 practice set: ${state.practice.join(', ')}`);
+});
+await check('Chinese inside grammar and mistake titles is hover-highlightable', async () => {
+  assert.ok(await hsk.evalJs('document.querySelectorAll(".point-name .lookup-char").length > 0'),
+    'grammar titles still render their Chinese as plain text');
+  assert.ok(await hsk.evalJs('document.querySelectorAll(".pitfall b .lookup-char").length > 0'),
+    'mistake titles still render their Chinese as plain text');
+});
+await check('the complete vocabulary list is searchable and paginated', async () => {
+  await hsk.evalJs(`(() => {
+    const input = document.querySelector('.vocab-search');
+    input.value = '爱好';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await hsk.waitFor('document.querySelector(".vocab-meta")?.textContent.includes("matches")',
+    'filtered vocabulary results');
+  assert.ok(await hsk.evalJs(
+    `[...document.querySelectorAll('.vocab-hanzi')].some((e) => e.textContent === '爱好')`),
+  'search did not retain the matching headword');
+  await hsk.evalJs(`(() => {
+    const input = document.querySelector('.vocab-search');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+});
 await check('readings are generated, not stored', async () => {
   const reading = await hsk.waitFor(
     'document.querySelector(".word .py")?.textContent || ""', 'vocabulary pinyin');
@@ -1447,6 +1483,77 @@ await library.setViewport(1365, 900);
 
 await check('wordlist.html raised no page errors', () => assert.deepEqual(library.errors, []));
 library.close();
+
+// --- HSK practice: separate membership, one schedule ----------------------
+
+const hskReview = await openPage('review.html?hsk=2&scope=level');
+await check('an HSK level opens as a tracked flashcard set', async () => {
+  await hskReview.evalJs(`Promise.all([
+    chrome.storage.local.set({ wordlist: [], studyProgress: {} }),
+    chrome.storage.sync.set({ newPerDay: 15, maxPerDay: 60 }),
+  ])`);
+  await hskReview.evalJs('location.reload()');
+  await hskReview.waitFor('!!document.getElementById("reveal")', 'an HSK review card');
+  const heading = await hskReview.evalJs(`({
+    title: document.getElementById('reviewTitle').textContent,
+    set: document.getElementById('setbar').textContent,
+    type: document.querySelector('.card-type')?.textContent,
+  })`);
+  assert.equal(heading.title, 'HSK 2 vocabulary');
+  assert.match(heading.set, /769 unique cards from 772 syllabus entries/);
+  assert.match(heading.set, /shared with every other set and the saved library/);
+  assert.match(heading.type, /HSK 2/);
+});
+await check('grading an HSK card tracks it without adding it to the library', async () => {
+  await hskReview.evalJs('document.getElementById("reveal").click()');
+  await hskReview.waitFor('!!document.querySelector(".grade.g-good")', 'HSK grade buttons');
+  await hskReview.evalJs('document.querySelector(".grade.g-good").click()');
+  await hskReview.waitFor('!!document.getElementById("reveal")', 'the next HSK card');
+  const state = await hskReview.evalJs(`chrome.storage.local.get([
+    'wordlist', 'studyProgress',
+  ]).then((r) => ({ saved: (r.wordlist || []).length,
+    schedules: Object.keys(r.studyProgress || {}).length }))`);
+  assert.equal(state.saved, 0, 'HSK membership leaked into the saved library');
+  assert.equal(state.schedules, 1, 'the HSK grade did not create one shared schedule');
+});
+await check('adding a studied HSK word to the library carries over its schedule', async () => {
+  const before = await hskReview.evalJs(`chrome.storage.local.get('studyProgress').then((r) => {
+    const [key, srs] = Object.entries(r.studyProgress || {})[0];
+    return { key, srs };
+  })`);
+  await hskReview.evalJs(`chrome.runtime.sendMessage({
+    type: 'saveWord',
+    entry: (() => {
+      const [cardType, simp, trad, pinyin] = ${JSON.stringify('PLACEHOLDER')};
+      return { cardType, simp, trad, pinyin, tones: '', defs: 'HSK word' };
+    })(),
+  })`.replace(JSON.stringify('PLACEHOLDER'), `(${JSON.stringify(before.key)}).split('\\u0001')`));
+  const shared = await hskReview.evalJs(`chrome.storage.local.get([
+    'wordlist', 'studyProgress',
+  ]).then((r) => {
+    const word = r.wordlist[0];
+    const key = [word.cardType || 'word', word.simp || '', word.trad || word.simp || '',
+      word.pinyin || ''].join('\\u0001');
+    return { library: word.srs, shared: r.studyProgress[key] };
+  })`);
+  assert.deepEqual(shared.library, before.srs);
+  assert.deepEqual(shared.shared, before.srs);
+});
+await check('an HSK answer can add its current word explicitly', async () => {
+  await hskReview.evalJs('document.getElementById("reveal").click()');
+  await hskReview.waitFor('!!document.querySelector(".library-add:not([disabled])")',
+    'the add-to-library action');
+  const before = await hskReview.evalJs(
+    'chrome.storage.local.get("wordlist").then((r) => (r.wordlist || []).length)');
+  await hskReview.evalJs('document.querySelector(".library-add").click()');
+  await hskReview.waitFor('document.querySelector(".library-add")?.classList.contains("on")',
+    'the library confirmation');
+  const after = await hskReview.evalJs(
+    'chrome.storage.local.get("wordlist").then((r) => (r.wordlist || []).length)');
+  assert.equal(after, before + 1);
+});
+await check('HSK review raised no page errors', () => assert.deepEqual(hskReview.errors, []));
+hskReview.close();
 
 // --- the review card: silent on the question, full popup on the answer -----
 

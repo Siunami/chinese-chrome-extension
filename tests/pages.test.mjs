@@ -169,10 +169,25 @@ test('review guards its keyboard shortcuts against typing', () => {
 test('the HSK page ships with the guide data it renders', () => {
   const hsk = read('hsk.js');
   assert.ok(hsk.includes("from './guides/index.js'"), 'hsk.js must import the guides');
+  assert.ok(hsk.includes("from './lib/hsk-vocab.js'"),
+    'hsk.js must load the complete standard vocabulary, not only the sampler');
+  assert.ok(hsk.includes('renderFullVocabulary'),
+    'hsk.js has no complete vocabulary-list surface');
   assert.ok(hsk.includes("type: 'pinyinBatch'"),
     'hsk.js must ask the service worker for readings rather than storing them');
   assert.ok(read('background.js').includes('pinyinBatch: handlePinyinBatch'),
     'background.js must answer pinyinBatch');
+});
+
+test('HSK and saved-library review use one shared schedule without sharing membership', () => {
+  const review = read('review.js');
+  const background = read('background.js');
+  assert.ok(review.includes("from './lib/studysets.js'"));
+  assert.ok(review.includes('recordSharedProgress'));
+  assert.ok(background.includes('studyProgress[key]'),
+    'adding an HSK-studied word to the library would reset its schedule');
+  assert.ok(!read('hsk.js').includes("type: 'saveWord'"),
+    'opening an HSK guide should not bulk-add the standard list to the library');
 });
 
 // Any Chinese anywhere in the app should open the popup. The exceptions are

@@ -13,6 +13,7 @@ import { translateGlossed, isPermanent } from './lib/translate.js';
 import { cardKey, tombstoneFor } from './lib/merge.js';
 import { getAiKey, getSyncMeta, syncNow } from './lib/sync.js';
 import { postAi } from './lib/aistatus.js';
+import { latestSrs, STUDY_PROGRESS_KEY } from './lib/studysets.js';
 
 // ---------------------------------------------------------------------------
 // Data loading (lazy; the worker may be restarted at any time)
@@ -228,7 +229,8 @@ async function handleSaveWord(msg) {
   if (!simp) return { ok: false };
   const trad = String(e.trad || '');
   const now = Date.now();
-  const { wordlist = [] } = await chrome.storage.local.get('wordlist');
+  const { wordlist = [], [STUDY_PROGRESS_KEY]: studyProgress = {} } =
+    await chrome.storage.local.get(['wordlist', STUDY_PROGRESS_KEY]);
   const key = keyForEntry(e);
   const idx = wordlist.findIndex((w) => cardKey(w) === key);
   let word;
@@ -257,6 +259,10 @@ async function handleSaveWord(msg) {
       sourceWord: String(e.sourceWord || ''),
     };
   }
+  // Joining the saved library is membership, not a reset. If this word has
+  // already been studied through an HSK set, carry that one shared schedule
+  // into the new library row.
+  word.srs = latestSrs(word.srs, studyProgress[key]);
   if (e.glossed) word.glossed = true;
   wordlist.unshift(word);
   await chrome.storage.local.set({ wordlist: wordlist.slice(0, MAX_WORDLIST) });

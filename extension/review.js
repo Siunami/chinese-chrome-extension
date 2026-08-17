@@ -12,6 +12,14 @@ import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
 import { forms, getHanziPref, onHanziPref } from './lib/hanzi.js';
+import {
+  hskPracticeHref, hskReviewCards, hskSetName, isHskPracticeParams, loadHskVocabulary,
+  vocabularyForLevel,
+} from './lib/hsk-vocab.js';
+import {
+  applySharedProgress, latestSrs, recordSharedProgress, STUDY_PROGRESS_KEY,
+  uniqueStudyCards,
+} from './lib/studysets.js';
 
 const { createSelectionBar } = globalThis.ZhongwenSaveCard;
 
@@ -21,6 +29,16 @@ mountShell({ active: 'review' });
 const appEl = document.getElementById('app');
 const statsEl = document.getElementById('stats');
 const keyhintEl = document.getElementById('keyhint');
+const titleEl = document.getElementById('reviewTitle');
+const setbarEl = document.getElementById('setbar');
+
+const params = new URLSearchParams(location.search);
+const hskMode = isHskPracticeParams(params);
+const hskLevel = hskMode ? Number(params.get('hsk')) : null;
+const hskScope = hskMode && params.get('scope') === 'cumulative' ? 'cumulative' : 'level';
+const embedded = params.has('embedded');
+let hskBaseCards = null;
+let hskSourceCount = 0;
 
 let queue = [];
 let current = null;
@@ -71,6 +89,10 @@ let currentExample = null;
 function cardBrief() {
   if (!current) return '';
   const lines = [];
+  if (hskMode) {
+    lines.push(`Practice set: ${hskSetName(hskLevel, hskScope)}.`);
+    if (current.pos) lines.push(`HSK part of speech: ${current.pos}.`);
+  }
   if (current.cardType === 'sentence') {
     lines.push(`Sentence card: ${current.simp}`);
     if (current.pinyin) lines.push(`Pinyin: ${current.pinyin}`);
@@ -100,7 +122,9 @@ const tutor = createTutor({
   selectionBar,
   sectionFor: () => ({ section: 'Flashcard', text: cardBrief() }),
   context: () => ({
-    where: 'a flashcard they are reviewing',
+    where: hskMode
+      ? `a flashcard in the ${hskSetName(hskLevel, hskScope)} set`
+      : 'a flashcard they are reviewing',
     section: current?.cardType === 'sentence' ? 'Sentence card' : 'Word card',
     text: cardBrief(),
   }),
@@ -129,8 +153,44 @@ const tutor = createTutor({
 });
 
 async function getWords() {
+  const { wordlist = [], [STUDY_PROGRESS_KEY]: studyProgress = {} } =
+    await chrome.storage.local.get(['wordlist', STUDY_PROGRESS_KEY]);
+
+  // A library row may have arrived from phone sync with a newer grade than
+  // this browser's shared map. Fold those states in while reading; whichever
+  // surface is graded next will persist the winner back to both places.
+  const shared = { ...studyProgress };
+  for (const word of wordlist) {
+    const key = cardKey(word);
+    shared[key] = latestSrs(shared[key], word.srs);
+  }
+
+  if (!hskMode) return applySharedProgress(wordlist, shared);
+  if (!hskBaseCards) {
+    const vocabulary = await loadHskVocabulary();
+    const selected = vocabularyForLevel(vocabulary, hskLevel, hskScope);
+    hskSourceCount = selected.length;
+    hskBaseCards = hskReviewCards(selected);
+  }
+  return uniqueStudyCards(applySharedProgress(hskBaseCards, shared));
+}
+
+async function persistGrade(card, srs) {
+  const { wordlist = [], [STUDY_PROGRESS_KEY]: progress = {} } =
+    await chrome.storage.local.get(['wordlist', STUDY_PROGRESS_KEY]);
+  const key = cardKey(card);
+  const nextProgress = recordSharedProgress(progress, card, srs);
+  const target = wordlist.find((word) => cardKey(word) === key);
+  if (target) target.srs = { ...srs };
+  await chrome.storage.local.set({
+    [STUDY_PROGRESS_KEY]: nextProgress,
+    ...(target ? { wordlist } : {}),
+  });
+}
+
+async function libraryState(card) {
   const { wordlist = [] } = await chrome.storage.local.get('wordlist');
-  return wordlist;
+  return wordlist.some((word) => cardKey(word) === cardKey(card));
 }
 
 function el(tag, className, text) {
@@ -364,17 +424,37 @@ function renderSummary(words) {
   panel.append(stageBar(words));
 
   const foot = el('p', 'summary-foot');
-  const link = el('a', '', 'See every card and its schedule →');
-  link.href = 'wordlist.html';
-  // Inside the dashboard the library is a sibling frame, so switch tabs there
-  // instead of replacing this frame with a second copy of the library.
-  if (document.body.classList.contains('embedded')) {
-    link.addEventListener('click', (event) => {
-      event.preventDefault();
-      parent.postMessage({ type: 'zx-open', view: 'library' }, '*');
-    });
+  if (hskMode) {
+    const guide = el('a', '', `Back to the HSK ${hskLevel} guide`);
+    guide.href = `hsk.html#${hskLevel}`;
+    const saved = el('a', '', 'Review your saved library →');
+    saved.href = 'review.html';
+    if (embedded) {
+      guide.addEventListener('click', (event) => {
+        event.preventDefault();
+        parent.postMessage({ type: 'zx-open', view: 'guides' }, '*');
+      });
+      saved.addEventListener('click', (event) => {
+        event.preventDefault();
+        parent.postMessage({
+          type: 'zx-open', view: 'review', url: 'review.html?embedded=1',
+        }, '*');
+      });
+    }
+    foot.append(guide, ' · ', saved);
+  } else {
+    const link = el('a', '', 'See every card and its schedule →');
+    link.href = 'wordlist.html';
+    // Inside the dashboard the library is a sibling frame, so switch tabs there
+    // instead of replacing this frame with a second copy of the library.
+    if (embedded) {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        parent.postMessage({ type: 'zx-open', view: 'library' }, '*');
+      });
+    }
+    foot.append(link);
   }
-  foot.append(link);
   panel.append(foot);
   appEl.append(panel);
 }
@@ -402,6 +482,10 @@ async function renderCard() {
   const card = el('div', 'card');
   const sentenceCard = current.cardType === 'sentence';
   if (sentenceCard) card.append(el('div', 'card-type', 'Sentence'));
+  else if (hskMode) {
+    const level = current.hskLevel === '7-9' ? 'HSK 7–9' : `HSK ${current.hskLevel}`;
+    card.append(el('div', 'card-type', `${level}${current.pos ? ` · ${current.pos}` : ''}`));
+  }
   // Lead with the script the learner reads in; the other form stays below,
   // smaller, so the card still teaches both.
   const face = forms(current, hanziPref);
@@ -430,6 +514,43 @@ async function reveal() {
   answerLine.append(pinyinEl(current), speakButton(forms(current, hanziPref).primary));
   card.append(answerLine);
   card.append(el('div', 'defs', current.defs));
+  if (hskMode) {
+    const reviewed = current;
+    const library = el('button', 'library-add', 'Checking saved library…');
+    library.type = 'button';
+    library.disabled = true;
+    card.append(library);
+    const saved = await libraryState(reviewed);
+    if (!revealed || current !== reviewed || !card.isConnected) return;
+    library.disabled = saved;
+    library.classList.toggle('on', saved);
+    library.textContent = saved ? '✓ In saved library' : '☆ Add to saved library';
+    if (!saved) {
+      library.addEventListener('click', async () => {
+        library.disabled = true;
+        library.textContent = 'Adding…';
+        const result = await chrome.runtime.sendMessage({
+          type: 'saveWord',
+          entry: {
+            cardType: 'word',
+            simp: reviewed.simp,
+            trad: reviewed.trad,
+            pinyin: reviewed.pinyin,
+            tones: reviewed.tones,
+            defs: reviewed.defs,
+            sourceWord: '',
+          },
+        }).catch(() => null);
+        if (result?.ok) {
+          library.textContent = '✓ Added to saved library';
+          library.classList.add('on');
+        } else {
+          library.disabled = false;
+          library.textContent = 'Could not add — try again';
+        }
+      });
+    }
+  }
   const ex = current.cardType === 'sentence' ? null : await exampleBlock(current);
   if (!revealed || !card.isConnected) return; // card changed while fetching
   if (ex) card.append(ex);
@@ -464,18 +585,10 @@ async function grade(g) {
   const wasNew = !graded.srs;
   const newSrs = schedule(graded.srs, g, now, { seed: cardSeed(graded) });
 
-  // persist against the freshest copy of the list
-  const words = await getWords();
-  const target = words.find(
-    (w) => (w.cardType || 'word') === (graded.cardType || 'word') &&
-      w.simp === graded.simp &&
-      (w.trad || w.simp) === (graded.trad || graded.simp) &&
-      w.pinyin === graded.pinyin,
-  );
-  if (target) {
-    target.srs = newSrs;
-    await chrome.storage.local.set({ wordlist: words });
-  }
+  // The schedule is independent of set membership. Persist it in the shared
+  // map and mirror it into the saved-library row when one exists, so an HSK
+  // grade, a saved-deck grade and phone sync all converge on one memory.
+  await persistGrade(graded, newSrs);
 
   session.seen.add(cardKey(graded));
   session.answers += 1;
@@ -558,6 +671,45 @@ onHanziPref((pref) => {
   }
 });
 
+function setLink(label, href) {
+  const link = el('a', '', label);
+  link.href = href;
+  if (embedded) {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      parent.postMessage({
+        type: 'zx-open',
+        view: 'review',
+        url: href.includes('?') ? `${href}&embedded=1` : `${href}?embedded=1`,
+      }, '*');
+    });
+  }
+  return link;
+}
+
+function renderSetHeader(words) {
+  if (!hskMode) {
+    titleEl.textContent = 'Review';
+    setbarEl.replaceChildren();
+    return;
+  }
+  titleEl.textContent = hskSetName(hskLevel, hskScope);
+  const unique = words.length;
+  const detail = unique === hskSourceCount
+    ? `${unique.toLocaleString()} cards`
+    : `${unique.toLocaleString()} unique cards from ${hskSourceCount.toLocaleString()} syllabus entries`;
+  setbarEl.replaceChildren(el('span', '',
+    `${detail} · schedules are shared with every other set and the saved library`));
+  if (hskLevel > 1) {
+    const otherScope = hskScope === 'level' ? 'cumulative' : 'level';
+    setbarEl.append(setLink(
+      otherScope === 'cumulative' ? 'Switch to cumulative set' : 'Only this level',
+      hskPracticeHref(hskLevel, otherScope),
+    ));
+  }
+  setbarEl.append(setLink('Saved-library review', 'review.html'));
+}
+
 async function init() {
   // Pull grades made on the phone before building today's queue, but never
   // hold the page hostage to a slow network (no-op when sync is unpaired).
@@ -570,6 +722,7 @@ async function init() {
     ]),
   ]);
   const words = await getWords();
+  renderSetHeader(words);
   queue = buildQueue(words, Date.now(), limits);
   session.planned = queue.length;
   advance();

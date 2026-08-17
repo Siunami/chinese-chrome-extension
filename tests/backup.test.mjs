@@ -8,6 +8,8 @@ import {
   FORMAT, SECRET_KEYS, TRANSIENT_KEYS, VERSION,
   buildBackup, joinList, labelFor, planRestore, readBackup, restoreOrder, summarizeBackup,
 } from '../extension/lib/backup.js';
+import { cardKey } from '../extension/lib/merge.js';
+import { STUDY_PROGRESS_KEY } from '../extension/lib/studysets.js';
 
 let passed = 0;
 function test(name, fn) {
@@ -174,6 +176,24 @@ test('the backup carries back review progress the deck has since lost', () => {
   assert.equal(plan.local.wordlist[0].srs.reps, 6);
 });
 
+test('shared set progress merges by newest grade and reconciles the library card', () => {
+  const item = card('你好');
+  const key = cardKey(item);
+  const old = { due: 4000, reps: 2, reviewedAt: 3000 };
+  const recent = { due: 9000, reps: 5, reviewedAt: 8000 };
+  const state = fullState();
+  state.local.wordlist = [{ ...item, srs: old }];
+  state.local[STUDY_PROGRESS_KEY] = { [key]: old };
+  const backup = roundTrip(buildBackup(state));
+  const plan = planRestore(backup, {
+    wordlist: [{ ...item, srs: recent }],
+    tombstones: [],
+    [STUDY_PROGRESS_KEY]: { [key]: recent },
+  }, 10000);
+  assert.deepEqual(plan.local[STUDY_PROGRESS_KEY][key], recent);
+  assert.deepEqual(plan.local.wordlist[0].srs, recent);
+});
+
 test('a card deleted after the backup stays deleted', () => {
   const backup = roundTrip(buildBackup(fullState()));
   const deleted = {
@@ -264,6 +284,7 @@ test('what did not fit is named in words, and an unknown key names itself', () =
   assert.equal(labelFor('newsHistory'), 'the news archive');
   assert.equal(labelFor('wordlist'), 'your saved cards');
   assert.equal(labelFor('progressStreak'), '"progressStreak"');
+  assert.equal(labelFor(STUDY_PROGRESS_KEY), 'your shared review schedules');
   assert.equal(joinList(['a']), 'a');
   assert.equal(joinList(['a', 'b']), 'a and b');
   assert.equal(joinList(['a', 'b', 'c']), 'a, b and c');

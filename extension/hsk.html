@@ -41,6 +41,9 @@
     .guide { flex: 1; min-width: 0; overflow-y: auto; padding: 22px 30px 60px; }
     .guide-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
     .guide-head h2 { margin: 0; font-size: 27px; }
+    .guide-head h2, .point-name, .theme-name, .passage-title, .pitfall b {
+      user-select: text;
+    }
     .badge {
       padding: 2px 9px; border-radius: 10px; background: #f1ead9;
       color: #8a7a58; font-size: 10px; font-weight: 700;
@@ -55,6 +58,21 @@
     .stat b { display: block; color: #b5232b; font-size: 17px; }
     .stat span { color: #999; font-size: 10px; font-weight: 650;
       letter-spacing: 0.04em; text-transform: uppercase; }
+
+    .set-actions { margin: -3px 0 20px; padding: 12px 14px; border: 1px solid #e7decc;
+      border-radius: 10px; background: #fbf7eb; }
+    .set-actions strong { display: block; margin-bottom: 7px; font-size: 13px; }
+    .set-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+    .practice {
+      display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px;
+      border: 1px solid #cda8aa; border-radius: 8px; background: #fff;
+      color: #7f1920; font-size: 12.5px; font-weight: 700; text-decoration: none;
+      cursor: pointer;
+    }
+    .practice:hover { background: #fdf0f0; }
+    .practice.primary { border-color: #a82a31; background: #a82a31; color: #fff; }
+    .practice.primary:hover { background: #8f2027; }
+    .set-note { margin: 7px 0 0; color: #8c826f; font-size: 11.5px; line-height: 1.45; }
 
     section { margin-top: 26px; }
     section > h3 {
@@ -92,6 +110,52 @@
       font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
     .word .py { color: #9a8f78; font-size: 11.5px; }
     .word .en { color: #666; font-size: 12px; }
+
+    /* The complete standard list. Only one 100-row page is in the DOM at a
+       time: the advanced band has 5,636 entries, and rendering every hover
+       target at once would turn a reference list into a stress test. */
+    .full-vocab { padding: 14px; border: 1px solid #e8e1d5; border-radius: 11px;
+      background: #fffdf7; }
+    .vocab-intro { margin: 0 0 11px; color: #555; font-size: 13px; line-height: 1.55; }
+    .vocab-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      margin-bottom: 10px; }
+    .vocab-tabs { display: flex; flex-wrap: wrap; gap: 5px; }
+    .vocab-tabs button { padding: 5px 10px; font-size: 12px; }
+    .vocab-tabs button.active { border-color: #d8cab5; background: #fdf6c7;
+      color: #7f1920; font-weight: 700; }
+    .vocab-search { flex: 1 1 220px; min-width: 160px; padding: 6px 9px;
+      border: 1px solid #d9d1c3; border-radius: 8px; background: #fff;
+      color: #333; font: inherit; font-size: 12.5px; }
+    .vocab-search:focus { outline: 2px solid #ead7a0; outline-offset: 1px; }
+    .vocab-meta { margin: 0 0 7px; color: #8f8676; font-size: 11.5px;
+      font-variant-numeric: tabular-nums; }
+    .vocab-scroll { overflow-x: auto; border: 1px solid #ebe5d9; border-radius: 9px;
+      background: #fff; }
+    .vocab-table { width: 100%; min-width: 720px; border-collapse: collapse;
+      table-layout: fixed; }
+    .vocab-table th, .vocab-table td { padding: 7px 9px; border-bottom: 1px solid #f0ece3;
+      text-align: left; vertical-align: top; }
+    .vocab-table tr:last-child td { border-bottom: 0; }
+    .vocab-table th { background: #faf7ef; color: #948a79; font-size: 9.5px;
+      letter-spacing: 0.06em; text-transform: uppercase; }
+    .vocab-table th:nth-child(1) { width: 48px; }
+    .vocab-table th:nth-child(2) { width: 190px; }
+    .vocab-table th:nth-child(3) { width: 145px; }
+    .vocab-table th:nth-child(4) { width: 68px; }
+    .vocab-no { color: #aaa; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+    .vocab-head { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; }
+    .vocab-hanzi { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-size: 18px; font-weight: 650; }
+    .vocab-alt { color: #999; font-family: "PingFang SC", "Hiragino Sans GB", sans-serif;
+      font-size: 13px; }
+    .vocab-listed { display: block; margin-top: 1px; color: #a19888; font-size: 10.5px; }
+    .vocab-py { color: #6f6657; font-size: 12px; }
+    .vocab-pos { color: #8c7b58; font-size: 10.5px; font-weight: 700; }
+    .vocab-def { color: #555; font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+    .vocab-empty { padding: 24px; color: #888; text-align: center; }
+    .vocab-pages { display: flex; justify-content: flex-end; align-items: center; gap: 8px;
+      margin-top: 10px; color: #8f8676; font-size: 11.5px; }
+    .vocab-pages button { padding: 4px 9px; font-size: 11.5px; }
 
     .passage { padding: 16px 18px; border: 1px solid #e8e1d5; border-radius: 11px;
       background: #fffdf7; }
@@ -133,6 +197,7 @@
     @media (max-width: 900px) {
       .rail { width: 108px; }
       .guide { padding: 16px 18px 50px; }
+      .vocab-search { flex-basis: 100%; }
     }
   </style>
 </head>

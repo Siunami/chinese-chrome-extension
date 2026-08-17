@@ -6,6 +6,17 @@
   <link rel="stylesheet" href="shell.css">
   <style>
     :root { --zx-measure: 700px; }
+    .review-heading { display: flex; align-items: baseline; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap; }
+    .review-heading .zx-title { margin-bottom: 6px; }
+    .setbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px;
+      color: var(--zx-muted); font-size: 12.5px; }
+    .setbar:empty { display: none; }
+    .setbar > span:first-child { flex: 1 1 280px; min-width: 0; }
+    .setbar a, .setbar button { padding: 4px 9px; border: 1px solid #ded6c7;
+      border-radius: 7px; background: #fffdf7; color: #7f1920; font: inherit;
+      font-weight: 650; text-decoration: none; white-space: nowrap; cursor: pointer; }
+    .setbar a:hover, .setbar button:hover { background: #f8f1e2; }
     .stats { color: var(--zx-muted); font-size: 13px; margin-bottom: 18px; }
     .stats b { color: #b5232b; }
     .progress { height: 5px; border-radius: 3px; background: #eceae2;
@@ -36,6 +47,10 @@
     .speak { --zx-speak: 32px; }
     .example .speak { --zx-speak: 25px; margin-left: 5px; }
     .defs { font-size: 16px; color: #333; max-width: 480px; margin: 0 auto; }
+    .library-add { align-self: center; margin-top: 2px; padding: 5px 11px; border-radius: 999px;
+      border: 1px solid #d8cab5; background: #fffdf7; color: #7f1920;
+      font-size: 12px; }
+    .library-add.on { border-color: #a8cfb1; background: #e8f7ec; color: #0a6b2a; }
     .example { margin-top: 14px; font-size: 15px; color: #444; }
     .example .zh { font-size: 18px;
       font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
@@ -88,7 +103,8 @@
 </head>
 <body class="zx-app">
   <main class="zx-content">
-  <h2 class="zx-title">Review</h2>
+  <div class="review-heading"><h2 class="zx-title" id="reviewTitle">Review</h2></div>
+  <div class="setbar" id="setbar"></div>
   <div class="stats" id="stats"></div>
   <div id="app"></div>
   <div class="keyhint" id="keyhint" hidden>

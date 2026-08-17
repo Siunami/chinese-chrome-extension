@@ -45,6 +45,13 @@ function selectView(view, updateHash = true) {
 // the dashboard's review tab.
 window.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'zx-open' && frames[event.data.view]) {
+    // A guide can launch a particular HSK practice set in the existing Review
+    // frame. Keep this deliberately narrow: frame messages may choose a review
+    // route, not turn the dashboard into a general URL loader.
+    if (event.data.view === 'review' && typeof event.data.url === 'string'
+        && /^review\.html\?(?:[a-z0-9=&-]+)$/i.test(event.data.url)) {
+      frames.review.src = event.data.url;
+    }
     selectView(event.data.view);
   }
   // A frame reporting whether it can be asked about right now. Only the one on

@@ -20,7 +20,10 @@
 // download and the DOM, and this module decides what goes in and what a
 // restore means.
 
-import { applyRemote, capCards } from './merge.js';
+import { applyRemote, capCards, cardKey } from './merge.js';
+import {
+  latestSrs, mergeStudyProgress, STUDY_PROGRESS_KEY,
+} from './studysets.js';
 
 export const FORMAT = 'zhongwen-explorer-backup';
 export const VERSION = 1;
@@ -134,7 +137,7 @@ export function summarizeBackup(backup) {
 // named rather than silently dropped.
 // ---------------------------------------------------------------------------
 
-const DECK_KEYS = ['wordlist', 'tombstones'];
+const DECK_KEYS = ['wordlist', 'tombstones', STUDY_PROGRESS_KEY];
 const BULK_KEYS = ['newsHistory', 'tutorChatLog', 'newsCategories'];
 
 export function restoreOrder(values) {
@@ -158,6 +161,7 @@ export function restoreOrder(values) {
 const KEY_LABELS = {
   wordlist: 'your saved cards',
   tombstones: 'the record of deleted cards',
+  [STUDY_PROGRESS_KEY]: 'your shared review schedules',
   newsHistory: 'the news archive',
   newsCategories: 'the suggested news topics',
   newsDifficulty: 'the news level',
@@ -194,5 +198,23 @@ export function planRestore(backup, current = {}, now = 0) {
   const capped = capCards(merged.cards, MAX_WORDLIST, now);
   local.wordlist = capped.cards;
   local.tombstones = capped.tombstones.concat(merged.tombstones).slice(0, MAX_TOMBSTONES);
+  // HSK sets and the saved library have different membership but one schedule
+  // per card. Merge that schedule exactly like card review state: the newest
+  // grade wins, whether it lived in the file, this browser's HSK progress, or
+  // an inline library card from an older version.
+  let progress = mergeStudyProgress(
+    backup.local?.[STUDY_PROGRESS_KEY],
+    current[STUDY_PROGRESS_KEY],
+  );
+  for (const card of local.wordlist) {
+    const key = cardKey(card);
+    const srs = latestSrs(card.srs, progress[key]);
+    card.srs = srs;
+    if (srs) progress[key] = srs;
+  }
+  if (Object.keys(progress).length
+      || backup.local?.[STUDY_PROGRESS_KEY] || current[STUDY_PROGRESS_KEY]) {
+    local[STUDY_PROGRESS_KEY] = progress;
+  }
   return { sync: { ...backup.sync }, local };
 }
