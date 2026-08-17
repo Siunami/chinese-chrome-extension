@@ -232,6 +232,7 @@
        computer. Chrome keeps all of it inside the extension, so uninstalling it
        or resetting this profile takes the lot; a backup is the only copy that
        survives that. Nothing is uploaded anywhere.</p>
+    <p class="note" id="backupFreshness"></p>
     <p class="note" id="backupUsage"></p>
     <div class="row">
       <label for="backupSecrets">Include the API key and pairing code</label>
@@ -246,6 +247,11 @@
       <input type="file" id="backupFile" accept=".json,application/json" hidden>
     </div>
     <p class="note" id="backupStatus"></p>
+    <p class="note">You do not have to come here for this. Once work has been
+       sitting in this browser unsaved for a week, a <strong>Back up</strong>
+       button appears in the navbar on every page of the app, and one click
+       writes the same file with the same choice about credentials you made
+       above. It goes away as soon as you press it.</p>
     <p class="note">Restoring merges the file's cards with the ones already on
        this computer, so nothing you have saved or reviewed since the backup is
        lost, and a card you deleted since stays deleted. Settings, news,

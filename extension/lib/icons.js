@@ -25,6 +25,15 @@ const PATHS = {
   chat: [['path', {
     d: 'M13.4 9a2 2 0 0 1-2 2H6.2l-3.6 2.5V4.4a2 2 0 0 1 2-2h6.8a2 2 0 0 1 2 2z',
   }]],
+  // Save to a file: an arrow coming down out of the app into a tray. The same
+  // shape every browser draws on its own downloads button, which is the point —
+  // the navbar's backup button has one job and it should be legible before the
+  // word next to it is read.
+  download: [
+    ['path', { d: 'M8 2.6v7.2' }],
+    ['path', { d: 'M5.2 7.2L8 10l2.8-2.8' }],
+    ['path', { d: 'M2.9 11.1v1.4a1 1 0 0 0 1 1h8.2a1 1 0 0 0 1-1v-1.4' }],
+  ],
   // Something needs attention. A triangle rather than a circle: it reads as a
   // warning at 14px where an (!) in a circle reads as "more information".
   warn: [

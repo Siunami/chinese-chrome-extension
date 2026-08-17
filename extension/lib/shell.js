@@ -17,6 +17,7 @@ import {
 } from './hanzi.js';
 import { getAskOpen, setAskOpen, onAskOpen, onTutorPresence } from './tutorstate.js';
 import { AI_NOTICES, getAiStatus, onAiStatus, openOptionsAt } from './aistatus.js';
+import { downloadBackup, getBackupReminder, onBackupReminder } from './backupstate.js';
 import { icon } from './icons.js';
 
 // id -> { label, href, count }. `count` names the badge this tab carries.
@@ -256,6 +257,83 @@ export function mountShell({ active, onSelect } = {}) {
   getAiStatus().then(paintNotice);
   onAiStatus(paintNotice);
 
+  // The backup button. Everything the app knows about a learner lives in
+  // chrome.storage, which belongs to the browser rather than to them — and the
+  // one place that could write it to a file was a section at the bottom of the
+  // options page, which is to say a place you find after you have already lost
+  // the deck.
+  //
+  // So the bar asks, but only when asking is worth something: not on a timer,
+  // and not while everything here is already in a file, but once work has been
+  // sitting in this browser unsaved for a week (lib/backup.js decides). Then it
+  // is one click — no dialog, no options page, no picking what goes in — and
+  // the file is in Downloads. Then it says what it wrote, and takes itself
+  // away — the state it was complaining about no longer exists.
+  const backup = el('button', 'zx-backup');
+  backup.type = 'button';
+  backup.hidden = true;
+  backup.append(icon('download', 14), el('span', 'zx-backup-text'));
+  // The confirmation and the nudge are the same control, so nothing may repaint
+  // it between the moment it is pressed and the moment its confirmation has
+  // been read. This is that latch; flashBackup releases it.
+  let saving = false;
+
+  function paintBackup(reminder) {
+    if (saving) return;
+    backup.hidden = !reminder.due;
+    backup.disabled = false;
+    backup.classList.remove('done', 'failed');
+    if (!reminder.due) return;
+    backup.querySelector('.zx-backup-text').textContent = reminder.label;
+    backup.title = reminder.detail;
+    backup.setAttribute('aria-label', `${reminder.label}. ${reminder.detail}`);
+  }
+
+  // Say what was written, not just that something was. "Saved" alone is what a
+  // button that quietly wrote an empty file would also say.
+  function flashBackup(text, failed = false) {
+    // The successful write has by now cleared the very state this button was
+    // complaining about, so the repaint it triggered wants to hide the control
+    // the confirmation is about to appear in. Hold it open for the three
+    // seconds it takes to read.
+    backup.hidden = false;
+    backup.querySelector('.zx-backup-text').textContent = text;
+    backup.title = text;
+    backup.setAttribute('aria-label', text);
+    backup.classList.toggle('done', !failed);
+    backup.classList.toggle('failed', failed);
+    setTimeout(() => {
+      saving = false;
+      getBackupReminder().then(paintBackup);
+    }, 3200);
+  }
+
+  backup.addEventListener('click', async () => {
+    // Latched before the write rather than after it: writing the file changes
+    // storage, which repaints every navbar in the app including this one, and
+    // that repaint would otherwise land between the download and its
+    // confirmation.
+    saving = true;
+    backup.disabled = true;
+    try {
+      const { bytes } = await downloadBackup();
+      const kb = bytes < 1024 * 1024
+        ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+        : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      flashBackup(`Saved · ${kb}`);
+    } catch {
+      // Never silently: a backup button that did nothing and said nothing is
+      // the worst version of this feature.
+      flashBackup('Could not save — open Options', true);
+    }
+    // Left disabled until the confirmation clears: while it says "Saved" it is
+    // not a button offering to do anything, and a second press would write a
+    // second identical file.
+  });
+
+  getBackupReminder().then(paintBackup);
+  onBackupReminder(paintBackup);
+
   // Settings is deliberately not a tab: it is a place you visit and come back
   // from, not one of the things you study.
   const settings = el(onSelect ? 'button' : 'a', 'zx-settings', 'Options');
@@ -292,7 +370,7 @@ export function mountShell({ active, onSelect } = {}) {
   document.body.classList.add('zx-shell');
   document.body.append(main);
 
-  header.append(brand, nav, el('div', 'zx-spacer'), notice, script, ask, settings);
+  header.append(brand, nav, el('div', 'zx-spacer'), notice, backup, script, ask, settings);
   document.body.prepend(header);
 
   function setActive(id) {

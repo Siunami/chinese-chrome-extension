@@ -4,12 +4,19 @@
 // Run: node tests/backup.test.mjs
 
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-  FORMAT, SECRET_KEYS, TRANSIENT_KEYS, VERSION,
-  buildBackup, joinList, labelFor, planRestore, readBackup, restoreOrder, summarizeBackup,
+  BACKUP_DUE_MS, BACKUP_STATE_KEY, FORMAT, SECRET_KEYS, TRANSIENT_KEYS, VERSION,
+  backupFilename, backupReminder, buildBackup, countsAsWork, humanizeSpan, joinList,
+  labelFor, markDirty, markSaved, planRestore, readBackup, readBackupState, restoreOrder,
+  summarizeBackup,
 } from '../extension/lib/backup.js';
 import { cardKey } from '../extension/lib/merge.js';
 import { STUDY_PROGRESS_KEY } from '../extension/lib/studysets.js';
+
+const DAY = 24 * 60 * 60 * 1000;
 
 let passed = 0;
 function test(name, fn) {
@@ -61,6 +68,7 @@ const fullState = () => ({
     syncMeta: { token: 'abc123', serverUrl: 'https://example.workers.dev', cursor: 4 },
     aiState: { code: 'bad-key', at: 99, detail: 'refused' },
     aiHealth: { at: 99, serverUrl: 'https://example.workers.dev', configured: true },
+    backupState: { at: 50, dirtySince: 80 },
   },
 });
 
@@ -88,7 +96,7 @@ test('the last provider error and the cached server health stay behind', () => {
   for (const key of TRANSIENT_KEYS) {
     assert.equal(key in backup.local, false, `${key} should not be backed up`);
   }
-  assert.deepEqual(TRANSIENT_KEYS, ['aiState', 'aiHealth']);
+  assert.deepEqual(TRANSIENT_KEYS, ['aiState', 'aiHealth', 'backupState']);
 });
 
 test('the key and the pairing code travel only when asked for', () => {
@@ -283,12 +291,148 @@ test('between the two, the small things go first so one big value cannot starve 
 test('what did not fit is named in words, and an unknown key names itself', () => {
   assert.equal(labelFor('newsHistory'), 'the news archive');
   assert.equal(labelFor('wordlist'), 'your saved cards');
-  assert.equal(labelFor('progressStreak'), '"progressStreak"');
   assert.equal(labelFor(STUDY_PROGRESS_KEY), 'your shared review schedules');
+  assert.equal(labelFor('progressStreak'), '"progressStreak"');
   assert.equal(joinList(['a']), 'a');
   assert.equal(joinList(['a', 'b']), 'a and b');
   assert.equal(joinList(['a', 'b', 'c']), 'a, b and c');
   assert.equal(joinList([]), '');
+});
+
+// --- knowing when to ask --------------------------------------------------
+
+test('an install with nothing unsaved is never asked to back up', () => {
+  // The whole point of not putting this on a timer: a browser that has been
+  // sitting untouched for a year is not overdue for anything.
+  assert.equal(backupReminder({ at: 1000, dirtySince: 0 }, 1000 + 400 * DAY).due, false);
+  assert.equal(backupReminder(null, 400 * DAY).due, false);
+  assert.equal(backupReminder({ nonsense: true }, 400 * DAY).due, false);
+});
+
+test('work that is only hours old is not worth interrupting anybody for', () => {
+  // A nudge ten minutes after a card is saved is how a reminder teaches you to
+  // ignore it before the day it would have mattered.
+  const now = 100 * DAY;
+  assert.equal(backupReminder({ at: 1, dirtySince: now - 3 * DAY }, now).due, false);
+  assert.equal(backupReminder({ at: 1, dirtySince: now - BACKUP_DUE_MS + 1 }, now).due, false);
+  assert.equal(backupReminder({ at: 1, dirtySince: now - BACKUP_DUE_MS }, now).due, true);
+});
+
+test('the clock is the age of the oldest unsaved work, not of the last backup', () => {
+  const now = 100 * DAY;
+  // Backed up a year ago, studied yesterday: one day of exposure, not a year.
+  assert.equal(backupReminder({ at: now - 365 * DAY, dirtySince: now - DAY }, now).due, false);
+  // Backed up yesterday is irrelevant if dirtySince says otherwise; the two
+  // are independent, and only one of them decides.
+  assert.equal(backupReminder({ at: now - DAY, dirtySince: now - 30 * DAY }, now).due, true);
+});
+
+test('an install that has never made a file is told that, in those words', () => {
+  const now = 100 * DAY;
+  const fresh = backupReminder({ at: 0, dirtySince: now - 20 * DAY }, now);
+  assert.equal(fresh.due, true);
+  assert.match(fresh.detail, /has ever been saved to a file/);
+  assert.match(fresh.detail, /3 weeks/);
+
+  const again = backupReminder({ at: now - 60 * DAY, dirtySince: now - 20 * DAY }, now);
+  assert.match(again.detail, /since your last backup/);
+  assert.equal(again.at, now - 60 * DAY);
+});
+
+test('the age is rounded to something a person would say', () => {
+  assert.equal(humanizeSpan(9 * DAY), '9 days');
+  assert.equal(humanizeSpan(20 * DAY), '3 weeks');
+  assert.equal(humanizeSpan(95 * DAY), '3 months');
+});
+
+test('the clock starts once per backup cycle, not once per card', () => {
+  // The first change after a backup is the only one that says anything new, so
+  // it is the only one that costs a write. Everything after it is a no-op.
+  const first = markDirty({ at: 500, dirtySince: 0 }, 900);
+  assert.deepEqual(first, { at: 500, dirtySince: 900 });
+  assert.equal(markDirty(first, 1200), null);
+  assert.equal(markDirty(first, 99999), null);
+  // Backing up clears it, and the next change starts a fresh one.
+  const saved = markSaved(2000);
+  assert.deepEqual(saved, { at: 2000, dirtySince: 0 });
+  assert.deepEqual(markDirty(saved, 2100), { at: 2000, dirtySince: 2100 });
+});
+
+test('storage that moves on its own does not count as the learner working', () => {
+  // A background sync every half hour, a health probe, and the tutor drawer
+  // being opened would otherwise make an abandoned browser look studied-in.
+  assert.equal(countsAsWork({ syncMeta: {} }, 'local'), false);
+  assert.equal(countsAsWork({ aiState: {}, aiHealth: {} }, 'local'), false);
+  assert.equal(countsAsWork({ tutorOpen: {} }, 'local'), false);
+  assert.equal(countsAsWork({ [BACKUP_STATE_KEY]: {} }, 'local'), false);
+  // And in particular the write that records a backup cannot start the cycle
+  // it just ended.
+  assert.equal(countsAsWork({ [BACKUP_STATE_KEY]: {}, aiState: {} }, 'local'), false);
+
+  assert.equal(countsAsWork({ wordlist: {} }, 'local'), true);
+  assert.equal(countsAsWork({ placementResults: {} }, 'local'), true);
+  assert.equal(countsAsWork({ theme: {} }, 'sync'), true);
+  // A key from a build this code has never seen is work until proven otherwise:
+  // the failure that matters is failing to ask, not asking too often.
+  assert.equal(countsAsWork({ somethingAddedNextYear: {} }, 'local'), true);
+  assert.equal(countsAsWork({ wordlist: {} }, 'managed'), false);
+});
+
+test('a stored state in any shape reads as two numbers', () => {
+  assert.deepEqual(readBackupState({ at: 5, dirtySince: 9 }), { at: 5, dirtySince: 9 });
+  assert.deepEqual(readBackupState(undefined), { at: 0, dirtySince: 0 });
+  assert.deepEqual(readBackupState('nope'), { at: 0, dirtySince: 0 });
+  assert.deepEqual(readBackupState({ at: -1, dirtySince: NaN }), { at: 0, dirtySince: 0 });
+});
+
+test("this install's own bookkeeping does not travel in the file", () => {
+  // It describes the machine that wrote the file, at a moment before the file
+  // existed. Restoring it would tell a just-restored install it had never
+  // backed up, which is both wrong and the exact opposite of reassuring.
+  const backup = buildBackup(fullState());
+  assert.equal(BACKUP_STATE_KEY in backup.local, false);
+});
+
+test('restoring dates the install from the file it was restored from', () => {
+  const backup = roundTrip(buildBackup(fullState(), { now: 1700000000000 }));
+  const plan = planRestore(backup, {}, 1800000000000);
+  // Restore a three-week-old backup and nothing is overdue: everything on this
+  // machine is in that file, and dirtySince says so until you study again.
+  assert.deepEqual(plan.local[BACKUP_STATE_KEY], { at: 1700000000000, dirtySince: 0 });
+  assert.equal(backupReminder(plan.local[BACKUP_STATE_KEY], 1800000000000).due, false);
+
+  // A file with no date still leaves the install in a truthful state rather
+  // than claiming it has never been backed up.
+  const undated = { ...backup, createdAt: 0 };
+  assert.deepEqual(planRestore(undated, {}, 555).local[BACKUP_STATE_KEY],
+    { at: 555, dirtySince: 0 });
+});
+
+test('backups are named by the day they were taken', () => {
+  assert.equal(backupFilename(1700000000000), 'zhongwen-explorer-backup-2023-11-14.json');
+});
+
+// --- the promise the whole feature rests on -------------------------------
+
+test('nothing in the extension keeps state anywhere a backup cannot see it', () => {
+  // A backup is a dump of chrome.storage, and that is only "everything" for as
+  // long as chrome.storage is the only place the extension puts anything. The
+  // day a feature reaches for IndexedDB or localStorage, the file silently
+  // stops being a complete copy — and it fails as somebody's lost progress
+  // years later, not as anything visible at the time. So the guard is here.
+  const extDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'extension');
+  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) return e.name === 'data' ? [] : walk(full);
+    return e.name.endsWith('.js') ? [full] : [];
+  });
+  const banned = /\b(?:window\.|globalThis\.|self\.)?(indexedDB|localStorage|sessionStorage)\b/;
+  const offenders = walk(extDir)
+    .filter((file) => banned.test(readFileSync(file, 'utf8')))
+    .map((file) => file.slice(extDir.length + 1));
+  assert.deepEqual(offenders, [],
+    `these keep state outside chrome.storage, so a backup no longer copies all of it: `
+    + `${offenders.join(', ')}`);
 });
 
 console.log(`OK — ${passed} tests passed`);

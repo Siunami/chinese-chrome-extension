@@ -33,12 +33,24 @@ export const VERSION = 1;
 const MAX_WORDLIST = 5000;
 const MAX_TOMBSTONES = 5000;
 
+// When this browser was last written to a file, and how long there has been
+// work in it that was not. See "Knowing when to ask" at the foot of this file.
+export const BACKUP_STATE_KEY = 'backupState';
+
+// Whether the credentials travel, remembered between backups so the one-click
+// button in the navbar makes the same choice the options page was told to.
+export const SECRETS_PREF_KEY = 'backupSecrets';
+
 // Not the learner's, and actively wrong to carry: the last thing a model
-// provider said about a key (aiState) and what the paired server answered
-// about its own (aiHealth). Both are re-derived by the next call, and a stale
-// "your key was rejected" restored onto a fresh install is a warning banner
-// about a key nobody has tried yet.
-export const TRANSIENT_KEYS = ['aiState', 'aiHealth'];
+// provider said about a key (aiState), what the paired server answered about
+// its own (aiHealth), and this install's own backup bookkeeping
+// (backupState). All three are re-derived, and a stale "your key was rejected"
+// restored onto a fresh install is a warning banner about a key nobody has
+// tried yet. backupState is a fourth kind of wrong: it describes the machine
+// that wrote the file, at a moment before the file existed, so restoring it
+// would greet a just-restored install with "you have never backed up".
+// planRestore writes the true one instead.
+export const TRANSIENT_KEYS = ['aiState', 'aiHealth', BACKUP_STATE_KEY];
 
 // A credential and a capability: the model-provider key that calls are billed
 // to, and the pairing token, which is the password to the synced deck. Both
@@ -65,6 +77,11 @@ export function buildBackup(
     local: kept,
   };
 }
+
+// Dated, because the point of these is to have more than one, and a folder of
+// files called "backup.json (3)" is a folder nobody can restore from.
+export const backupFilename = (createdAt) =>
+  `zhongwen-explorer-backup-${new Date(createdAt).toISOString().slice(0, 10)}.json`;
 
 // Parse and vet a file the learner picked. Every rejection throws a sentence
 // meant to be shown as-is: this is the one place where the alternative to a
@@ -216,5 +233,111 @@ export function planRestore(backup, current = {}, now = 0) {
       || backup.local?.[STUDY_PROGRESS_KEY] || current[STUDY_PROGRESS_KEY]) {
     local[STUDY_PROGRESS_KEY] = progress;
   }
+  // A restore is the one moment this install can be certain its state is in a
+  // file on somebody's disk, and the file says when it was written. Dating the
+  // bookkeeping from the file rather than from now is what keeps the nudge
+  // honest either way: restore last month's backup and nothing is overdue
+  // until you study again, because nothing has happened since that is not in it.
+  local[BACKUP_STATE_KEY] = markSaved(Number(backup.createdAt) || now);
   return { sync: { ...backup.sync }, local };
+}
+
+// ---------------------------------------------------------------------------
+// Knowing when to ask
+//
+// A backup nobody remembers to take is a feature that only works for people
+// who did not need it. But a reminder on a timer is worse than none: it goes
+// off on an install where nothing has changed, teaches you it is noise, and is
+// dismissed on the one day it was right.
+//
+// So the clock is not "how long since the last backup" — it is how long the
+// oldest unsaved work has been sitting here. Nothing studied since the last
+// file, nothing to say. Studied this morning, still nothing: a nag ten minutes
+// after a card is saved trains you to ignore it. It is only when work has been
+// unsaved for a week that this browser is holding something you would actually
+// miss, and that is when the navbar grows a button.
+//
+// Two numbers, in one storage key:
+//
+//   at          when a file was last written, or 0 for an install that has
+//               never made one. Only ever used to say so.
+//   dirtySince  when the first change since that file happened, or 0 for
+//               "everything here is in the file". This is the age that
+//               decides, and it is written once per backup cycle rather than
+//               on every card: after the first change there is nothing left to
+//               record until the next backup clears it.
+// ---------------------------------------------------------------------------
+
+export const BACKUP_DUE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Storage that moves on its own. The pairing bookkeeping advances on every
+// background sync, the AI verdicts on every model call, and the tutor drawer's
+// open/shut bit every time it is opened — treating any of them as work would
+// make an install that is merely running look like one that is being used, and
+// the reminder would fire on a browser nobody has studied in for a month.
+export const QUIET_KEYS = TRANSIENT_KEYS.concat(['syncMeta', 'tutorOpen']);
+
+export function readBackupState(raw) {
+  const state = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const stamp = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0);
+  return { at: stamp(state.at), dirtySince: stamp(state.dirtySince) };
+}
+
+// Does this storage change-set mean the learner did something?
+export function countsAsWork(changes, area) {
+  if (area !== 'local' && area !== 'sync') return false;
+  return Object.keys(changes || {}).some((key) => !QUIET_KEYS.includes(key));
+}
+
+// The state to write when work happens, or null when there is nothing to
+// write — which is the usual answer, because the first change after a backup
+// is the only one that tells us anything new.
+export function markDirty(raw, now) {
+  const state = readBackupState(raw);
+  if (state.dirtySince) return null;
+  return { ...state, dirtySince: now };
+}
+
+export const markSaved = (at) => ({ at, dirtySince: 0 });
+
+// Rounded on purpose. The exact number is 9 days, and nobody has ever acted
+// differently on 9 than on "over a week" — but the difference between "a week"
+// and "3 months" is the whole message.
+export function humanizeSpan(ms) {
+  const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+  if (days < 14) return `${days} days`;
+  if (days < 60) return `${Math.round(days / 7)} weeks`;
+  return `${Math.round(days / 30)} months`;
+}
+
+/**
+ * Whether to put the button in front of the learner, and what it should say.
+ *
+ *   raw    the stored backupState, in whatever shape storage handed it over
+ *   now    Date.now()
+ *
+ * Returns { due, at, span, label, detail }. `label` and `detail` are meant to
+ * be shown as-is; `at` is left as a timestamp because how a date is written is
+ * the caller's locale's business, not this module's.
+ */
+export function backupReminder(raw, now, { dueMs = BACKUP_DUE_MS } = {}) {
+  const state = readBackupState(raw);
+  const age = state.dirtySince ? now - state.dirtySince : 0;
+  const base = { due: false, at: state.at, span: '' };
+  if (!state.dirtySince || age < dueMs) return base;
+
+  const span = humanizeSpan(age);
+  return {
+    due: true,
+    at: state.at,
+    span,
+    label: 'Back up',
+    detail: state.at
+      ? `${span} of learning has happened since your last backup, and it is only in `
+        + 'this browser. One click writes everything — cards, review progress, '
+        + 'settings, news, tutor conversations — to a file in your Downloads.'
+      : `Nothing here has ever been saved to a file. ${span} of learning lives only `
+        + 'in this browser, and uninstalling the extension or resetting this Chrome '
+        + 'profile would take all of it. One click writes it to your Downloads.',
+  };
 }

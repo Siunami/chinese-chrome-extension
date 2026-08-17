@@ -13,6 +13,7 @@ import { translateGlossed, isPermanent } from './lib/translate.js';
 import { cardKey, tombstoneFor } from './lib/merge.js';
 import { getAiKey, getSyncMeta, syncNow } from './lib/sync.js';
 import { postAi } from './lib/aistatus.js';
+import { noteStorageChange } from './lib/backupstate.js';
 import { latestSrs, STUDY_PROGRESS_KEY } from './lib/studysets.js';
 
 // ---------------------------------------------------------------------------
@@ -113,6 +114,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  // How long there has been work in this browser that is not in any file. The
+  // service worker is the only place that sees every write — a card saved from
+  // the page you are reading is written here, not by any extension page that
+  // could have noticed — so this is where the clock behind the navbar's backup
+  // button starts. lib/backupstate.js ignores the keys that move on their own.
+  noteStorageChange(changes, area);
+
   if (area !== 'local') return;
   // syncMeta changes are sync's own bookkeeping; reacting to them would loop.
   if (!changes.wordlist && !changes.tombstones) return;

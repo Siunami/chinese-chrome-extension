@@ -241,7 +241,10 @@ headless Chrome, so they cannot quietly stop being true.)*
   the profile takes the lot. **Download backup** on the options page writes all
   of it to a `.json` file on your computer, and **Restore from a file** reads
   one back — merging its cards with whatever is already here, so a restore can
-  only ever add. See [Backing up your progress](#backing-up-your-progress).
+  only ever add. You do not have to remember: once work has been sitting in the
+  browser unsaved for a week, a **Back up** button appears in the navbar on
+  every page, and one click writes the file. See
+  [Backing up your progress](#backing-up-your-progress).
 - **Themes** — classic Zhongwen yellow, light, or dark.
 - **Toggle** — click the toolbar icon to switch the dictionary on/off (badge
   shows ON). History and review pages are linked from the options page.
@@ -453,9 +456,47 @@ dated `.json` file: saved cards and their review schedules, every setting, the
 news archive, placement results, tutor conversations, your HSK level. It is a
 dump of what is stored rather than a hand-picked list of keys, so state a
 future feature adds is in the file without anyone remembering to add it —
-excepting two keys that describe the last five minutes rather than the learner
-(the last provider error, and the cached answer about the server's own key),
-which would otherwise restore as a warning about a key nobody has tried yet.
+excepting three keys that describe this browser's last five minutes rather than
+the learner: the last provider error and the cached answer about the server's
+own key (which would otherwise restore as a warning about a key nobody has
+tried yet), and this install's own backup bookkeeping, described below.
+`chrome.storage` really is the only place anything is kept — no IndexedDB, no
+`localStorage` — and `tests/backup.test.mjs` reads the source to keep it that
+way, because the day a feature reaches somewhere else the file quietly stops
+being a complete copy.
+
+### The button that asks
+
+A backup nobody remembers to take only works for people who did not need it,
+so the app asks — but a reminder on a timer is worse than none, because it goes
+off on an install where nothing has changed, teaches you it is noise, and gets
+dismissed on the one day it was right.
+
+So the clock is not "how long since the last backup". It is **how long the
+oldest unsaved work has been sitting here**. Study nothing since your last file
+and there is nothing to say. Save a card this morning and there is still
+nothing to say. Only when work has been unsaved for a week does the navbar grow
+a **Back up** button, on every page of the app — and then it is one click, no
+dialog and no options page, and the file is in your Downloads. It disappears as
+soon as you press it, because what it was asking about no longer exists.
+
+Two numbers in one storage key do this (`backupState`): when a file was last
+written, and when the first change since that file happened. The second is what
+decides, and it is written once per backup cycle rather than once per card —
+after the first change there is nothing new to record until the next backup
+clears it. Storage that moves on its own is not counted: the pairing
+bookkeeping advances on every background sync, the AI verdicts on every model
+call, and the tutor drawer's open/shut bit every time it is opened, and
+counting any of them would make a browser nobody has studied in look busy.
+
+The one-click button uses whatever choice about credentials the options page
+was last told, which is why that checkbox is now remembered rather than reset
+each visit. Restoring a file dates the install from the file, so restoring last
+month's backup leaves nothing overdue until you study again.
+
+The options page says the same two facts in a sentence — when the last file was
+written, and whether anything has happened since — for anyone who came to check
+rather than because they were asked.
 
 The **API key and pairing code** are the one thing the page asks about. Both
 are needed to restore an install exactly as it was, and both are credentials —
@@ -581,7 +622,14 @@ credentials stay behind, that a mangled or newer-than-us file is refused with a
 sentence instead of half-applied, and — the property the whole feature rests on
 — that restoring cannot lose a card: work done since the backup survives it, a
 deletion since is not undone by it, and restoring twice is the same as
-restoring once. `tests/chatlog.test.mjs` covers the ceiling on attached
+restoring once. It also covers the reminder, which is mostly a test of when to
+stay quiet: an untouched browser is never overdue however long it sits, work
+hours old is not worth interrupting anybody for, the clock is the age of the
+unsaved work rather than of the last backup, storage that moves on its own is
+not mistaken for studying, and the whole thing costs one write per backup cycle
+rather than one per card. And it reads the extension's own source to check that
+nothing keeps state outside `chrome.storage`, which is the assumption the file
+being a complete copy rests on. `tests/chatlog.test.mjs` covers the ceiling on attached
 pictures: that the case the per-conversation rules alone allowed really is over
 3 MB, that packing brings it under budget without losing a conversation, a
 message or a word, that the newest pictures are the ones kept, and that once the
@@ -632,7 +680,12 @@ the only way to find out that the page reads *all* of storage into the file
 (a backup with an empty `sync` half is the shape of this feature silently not
 working), that the credentials checkbox is obeyed, that the state comes back,
 that the page repaints itself instead of showing what it read on load, and that
-someone else's `.json` is refused rather than applied. The out-of-room path is
+someone else's `.json` is refused rather than applied. The navbar's one-click
+button is driven the same way, from the opposite end: with a fortnight of
+unsaved work planted in storage it has to appear in the bar of an ordinary
+page, say how long it has been, produce a file with all of storage in it rather
+than a lesser one for being a shortcut, and then take itself away. The
+out-of-room path is
 driven there too, by refusing every write that carries the news archive: the
 deck still has to land, the small keys with it, and the page has to say which
 part did not fit rather than reporting an unqualified success.
@@ -1181,10 +1234,15 @@ extension/          the unpacked extension (load this folder in Chrome)
   placement.html/js the interview itself, and the report it leaves behind
   lib/merge.js      per-card sync merge rules (shared with worker + pwa)
   lib/sync.js       sync client: push/pull against the worker
-  lib/backup.js     what goes in a backup file and what restoring one means:
-                    a dump of both storage areas, cards merged rather than
-                    overwritten on the way back in, and the order to put things
-                    back in when they will not all fit (pure; tested)
+  lib/backup.js     what goes in a backup file, what restoring one means, and
+                    when a browser is overdue for one: a dump of both storage
+                    areas, cards merged rather than overwritten on the way back
+                    in, the order to put things back in when they will not all
+                    fit, and the age-of-unsaved-work clock behind the navbar's
+                    Back up button (pure; tested)
+  lib/backupstate.js the half of that which touches Chrome: reading storage into
+                    a file, the download itself, and the one key recording when
+                    it last happened — shared by the options page and the navbar
   lib/aistatus.js   whether the AI features can work (key present? refused by the
                     provider? server too old?) and the one POST every model-backed
                     call goes through — the navbar's notice reads it (tested)
@@ -1238,8 +1296,9 @@ tests/              unit + protocol tests: node tests/merge.test.mjs, …
                     sentence and vocabulary item actually can), pages.test.mjs
                     checks that every page loads the classic scripts before its
                     module, hsk-vocab.test.mjs pins all 11,092 standard rows and
-                    cross-set schedule sharing, backup.test.mjs pins what a backup carries and
-                    what restoring one may and may not do to the deck
+                    cross-set schedule sharing, backup.test.mjs pins what a backup carries,
+                    what restoring one may and may not do to the deck, and when
+                    the app is allowed to ask for one
 rawdata/            original downloads (gitignored)
 test-page.html      manual test fixture with edge cases
 ```

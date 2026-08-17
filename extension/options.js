@@ -7,8 +7,11 @@ import {
 } from './lib/aistatus.js';
 import { DEFAULT_LIMITS } from './lib/srs.js';
 import {
-  buildBackup, joinList, labelFor, planRestore, readBackup, restoreOrder, summarizeBackup,
+  joinList, labelFor, planRestore, readBackup, restoreOrder, summarizeBackup,
 } from './lib/backup.js';
+import {
+  downloadBackup, getBackupState, getIncludeSecrets, setIncludeSecrets,
+} from './lib/backupstate.js';
 import { mountShell } from './lib/shell.js';
 import { onHanziPref } from './lib/hanzi.js';
 import qrcode from './lib/qr.js';
@@ -316,6 +319,7 @@ renderSync();
 // ---------------------------------------------------------------------------
 
 const backupEls = {
+  freshness: document.getElementById('backupFreshness'),
   usage: document.getElementById('backupUsage'),
   secrets: document.getElementById('backupSecrets'),
   download: document.getElementById('backupDownload'),
@@ -348,6 +352,37 @@ async function renderUsage() {
   }
 }
 
+// When the last file was written, and whether anything has happened since. The
+// navbar's button only appears once that gap is a week old; this line is the
+// same two facts said plainly, for someone who came here to check rather than
+// because they were asked to.
+async function renderFreshness() {
+  const { at, dirtySince } = await getBackupState();
+  const when = at ? new Date(at).toLocaleDateString(undefined, {
+    year: 'numeric', month: 'long', day: 'numeric',
+  }) : '';
+  backupEls.freshness.textContent = !at
+    ? 'None of this has ever been written to a file.'
+    : dirtySince
+      ? `Last backed up on ${when}. You have studied since, so this browser is `
+        + 'holding work that is not in that file.'
+      : `Last backed up on ${when}, and nothing has changed since — that file is `
+        + 'the whole of it.';
+  backupEls.freshness.classList.toggle('warn', !at);
+}
+
+async function renderBackupSection() {
+  backupEls.secrets.checked = await getIncludeSecrets();
+  await Promise.all([renderUsage(), renderFreshness()]);
+}
+
+// Remembered rather than re-asked, because the one-click button in the navbar
+// has no checkbox of its own and must not make the opposite choice silently.
+backupEls.secrets.addEventListener('change', () => {
+  setIncludeSecrets(backupEls.secrets.checked);
+  flashSaved();
+});
+
 // One write for the ordinary case, and a key-at-a-time retry when the browser
 // refuses it. A restore is the one moment the app writes everything at once, so
 // it is also the one moment a single oversized value can take the deck down
@@ -370,31 +405,17 @@ async function writeArea(area, values) {
   }
 }
 
+// The writing itself is lib/backupstate.js, shared with the navbar's one-click
+// button — the checkbox above is the only thing this page adds, and it is read
+// here rather than from storage so that the box you are looking at is the one
+// that decides.
 backupEls.download.addEventListener('click', async () => {
-  // `null` rather than a list of keys: whatever this install has stored is
-  // what the file gets, including state written by a version of the extension
-  // this code has never heard of.
-  const [sync, local] = await Promise.all([
-    chrome.storage.sync.get(null),
-    chrome.storage.local.get(null),
-  ]);
   const includeSecrets = backupEls.secrets.checked;
-  const backup = buildBackup({ sync, local }, {
-    includeSecrets,
-    now: Date.now(),
-    extensionVersion: chrome.runtime.getManifest().version,
-  });
-  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  // Dated, because the point of these is to have more than one.
-  a.download = `zhongwen-explorer-backup-${new Date(backup.createdAt).toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  setBackupStatus(`Saved ${summarizeBackup(backup)} — ${fmtBytes(blob.size)}.`
+  const { backup, bytes } = await downloadBackup({ includeSecrets });
+  setBackupStatus(`Saved ${summarizeBackup(backup)} — ${fmtBytes(bytes)}.`
     + (includeSecrets ? '' : ' The API key and pairing code were left out, so restoring'
       + ' this file will not change either.'));
+  renderFreshness();
   flashSaved();
 });
 
@@ -438,7 +459,7 @@ backupEls.file.addEventListener('change', async () => {
   showSettings(await chrome.storage.sync.get(DEFAULTS));
   renderAiKey();
   renderSync();
-  renderUsage();
+  renderBackupSection();
   // Counted from storage rather than from the plan: if something did not go in,
   // the number has to be what is actually there.
   const { wordlist = [] } = await chrome.storage.local.get('wordlist');
@@ -451,7 +472,7 @@ backupEls.file.addEventListener('change', async () => {
   flashSaved();
 });
 
-renderUsage();
+renderBackupSection();
 
 testVoice.addEventListener('click', async () => {
   const result = await chrome.runtime.sendMessage({

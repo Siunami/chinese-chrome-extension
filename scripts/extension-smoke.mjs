@@ -895,6 +895,13 @@ await check('the page says how much of this browser the app is using', async () 
   assert.match(usage, /holding \d+(\.\d+)? (KB|MB) of your learning/);
 });
 
+await check('the page says when the last file was written and whether it is still true', async () => {
+  // Downloading and restoring both date this install, so by now the page has
+  // something to say — and nothing has happened since that is not in the file.
+  const settled = await opts.evalJs('document.getElementById("backupFreshness").textContent');
+  assert.match(settled, /Last backed up on .+nothing has changed since/);
+});
+
 await check('a file that is not a backup is refused rather than applied', async () => {
   const status = await opts.evalJs(`(async () => {
     window.confirm = () => true;
@@ -914,6 +921,79 @@ await check('a file that is not a backup is refused rather than applied', async 
   assert.equal(
     await opts.evalJs('chrome.storage.local.get("hskLevel").then((r) => r.hskLevel)'), 4);
 });
+// The navbar's one-click backup. The unit tests decide when it should appear;
+// this is the half only a browser can answer — that the button is in the bar of
+// an ordinary page, that pressing it writes a real file with the whole of
+// storage in it, and that it then stops asking.
+await check('the navbar stays quiet while everything here is in a file', async () => {
+  assert.equal(await opts.evalJs(
+    'document.querySelector(".zx-backup").hidden'), true);
+});
+
+await check('a week of unsaved work puts a backup button in the navbar', async () => {
+  const label = await opts.evalJs(`(async () => {
+    const WEEK = 7 * 24 * 60 * 60 * 1000;
+    await chrome.storage.local.set({
+      backupState: { at: Date.now() - 40 * 86400000, dirtySince: Date.now() - 2 * WEEK },
+    });
+    const btn = document.querySelector('.zx-backup');
+    for (let i = 0; i < 100 && btn.hidden; i++) await new Promise((r) => setTimeout(r, 50));
+    return { hidden: btn.hidden, text: btn.textContent, title: btn.title };
+  })()`);
+  assert.equal(label.hidden, false, 'the button never appeared');
+  assert.match(label.text, /Back up/);
+  // It has to say what it is about to do before it is pressed: this is the one
+  // control in the app that writes a file full of the learner's credentials.
+  assert.match(label.title, /2 weeks of learning/);
+  assert.match(label.title, /Downloads/);
+});
+
+await check('one click writes the whole of storage and the button stops asking', async () => {
+  const result = await opts.evalJs(`(async () => {
+    let blob = null;
+    const create = URL.createObjectURL;
+    const click = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = (b) => { blob = b; return 'blob:captured'; };
+    HTMLAnchorElement.prototype.click = function () {};
+    const btn = document.querySelector('.zx-backup');
+    try {
+      btn.click();
+      for (let i = 0; i < 100 && !blob; i++) await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      URL.createObjectURL = create;
+      HTMLAnchorElement.prototype.click = click;
+    }
+    return {
+      file: blob && await blob.text(),
+      text: btn.textContent,
+      state: (await chrome.storage.local.get('backupState')).backupState,
+    };
+  })()`);
+  assert.ok(result.file, 'no file was produced');
+  const backup = JSON.parse(result.file);
+  // The same complete dump the options page writes — not a lesser file for
+  // being taken from a button in a navbar.
+  assert.equal(backup.format, 'zhongwen-explorer-backup');
+  assert.equal(backup.local.hskLevel, 4);
+  assert.ok(Object.keys(backup.sync).length >= 5, 'no settings in the one-click file');
+  assert.equal('backupState' in backup.local, false, 'the file carries this install\'s clock');
+  // Confirmation in the button itself, since the file has gone somewhere the
+  // page cannot look.
+  assert.match(result.text, /Saved · \d+(\.\d+)? (KB|MB)/);
+  // And the reason it was asking is gone: nothing unsaved, dated at the file.
+  assert.equal(result.state.dirtySince, 0, 'the install is still marked unsaved');
+  assert.equal(result.state.at, backup.createdAt);
+
+  // Once the confirmation has had its three seconds, the button takes itself
+  // away rather than sitting there asking for a backup that already exists.
+  const gone = await opts.evalJs(`(async () => {
+    const btn = document.querySelector('.zx-backup');
+    for (let i = 0; i < 120 && !btn.hidden; i++) await new Promise((r) => setTimeout(r, 100));
+    return btn.hidden;
+  })()`);
+  assert.equal(gone, true, 'the button kept asking after it had been pressed');
+});
+
 await opts.shot('options-backup');
 await check('the options page raised no page errors', () => assert.deepEqual(opts.errors, []));
 opts.close();
