@@ -17,11 +17,12 @@
 // passage is then tracked with the CSS Custom Highlight API so it never
 // disturbs the hoverable spans underneath.
 
-import { DEFAULT_SERVER_URL, getSyncMeta, newToken } from './sync.js';
+import { getSyncMeta, hasDefaultServer, pairWith } from './sync.js';
 import { postAi } from './aistatus.js';
+import { packChats } from './chatlog.js';
 import { icon } from './icons.js';
 import { buildProfile } from './profile.js';
-import { RESULTS_KEY } from './placement.js';
+import { RESULTS_KEY, placementDigest } from './placement.js';
 import { announceTutor, getAskOpen, onAskOpen, setAskOpen } from './tutorstate.js';
 
 const HIGHLIGHT_NAME = 'tutor-quote';
@@ -176,6 +177,12 @@ const TUTOR_CSS = `
   }
   .tutor .msg.bot .bubble p { margin: 0 0 7px; }
   .tutor .msg.bot .bubble p:last-child { margin-bottom: 0; }
+  /* Shift+Enter puts a line break in the box you type in, so the question in
+     the log keeps it. Without this the browser collapses every break and the
+     three-line question you wrote comes back as one paragraph — a list of
+     characters you asked about, run together. A long unbroken run (a pasted
+     URL) still breaks rather than pushing the bubble past its own edge. */
+  .tutor .msg.user .bubble .text { white-space: pre-wrap; overflow-wrap: break-word; }
   .tutor .msg .quoted {
     margin-bottom: 5px; padding: 4px 8px; border-left: 2px solid #c9a55c;
     border-radius: 0 5px 5px 0; background: rgba(201, 165, 92, 0.13);
@@ -373,8 +380,6 @@ function iconButton(className, name, label, size) {
 // ---------------------------------------------------------------------------
 
 const STORE_KEY = 'tutorChatLog';
-const MAX_CHATS = 40;        // conversations kept before the oldest is dropped
-const MAX_STORED_TURNS = 60; // messages retained per conversation
 
 // Everything in one record so pruning is possible: per-chat keys would grow
 // without bound. Newest first, which is also the order the list renders in.
@@ -383,24 +388,14 @@ async function loadChats() {
   return Array.isArray(chats) ? chats : [];
 }
 
-// Attached thumbnails are the one thing in here big enough to matter: extension
-// storage is a few megabytes, and 40 chats of them would fill it. The last few
-// keep their pictures — long enough to still be reading the answer — and older
-// messages keep only the words.
-const KEEP_IMAGES = 6;
-
-function prune(messages) {
-  const kept = messages.slice(-MAX_STORED_TURNS);
-  return kept.map((msg, i) => (msg.images && i < kept.length - KEEP_IMAGES
-    ? { ...msg, images: undefined }
-    : msg));
-}
-
+// How many conversations, how many turns of each, and how many pictures across
+// the whole log are lib/chatlog.js — attached images are the most expensive
+// thing this extension stores, so that policy is written down and tested in one
+// place rather than spelled out here.
 async function writeChat(chat) {
   const chats = await loadChats();
   const rest = chats.filter((c) => c.id !== chat.id);
-  rest.unshift({ ...chat, messages: prune(chat.messages) });
-  await chrome.storage.local.set({ [STORE_KEY]: rest.slice(0, MAX_CHATS) });
+  await chrome.storage.local.set({ [STORE_KEY]: packChats([chat, ...rest]) });
 }
 
 async function deleteChat(id) {
@@ -454,7 +449,23 @@ const MAX_SHOTS = 3;      // per question; the Worker enforces the same cap
 const SEND_EDGE = 1120;   // longest side of what the model is shown
 const THUMB_EDGE = 150;   // longest side of what is kept in the conversation
 
-async function drawScaled(blob, edge, type, quality) {
+// Which encoding is smaller is not something you can tell by looking at the
+// picture, so both are made and the smaller one kept. WebP is dramatically
+// better on the flat backgrounds and crisp text of a screenshot — a 1120px one
+// measured 27 KB against JPEG's 70 KB — and can come out slightly *larger* than
+// JPEG on a noisy photograph. Quality is unchanged either way: the saving is in
+// the format, not in throwing away detail the tutor has to read Chinese out of.
+const ENCODINGS = ['image/webp', 'image/jpeg'];
+
+// A canvas asked for a type it cannot make answers with a PNG instead of an
+// error, and a PNG of a photograph is many times larger than either of these —
+// so an answer is only used when it is the type that was asked for.
+function encode(canvas, type, quality) {
+  const url = canvas.toDataURL(type, quality);
+  return url.startsWith(`data:${type};`) ? { mime: type, url } : null;
+}
+
+async function drawScaled(blob, edge, quality) {
   const bitmap = await createImageBitmap(blob);
   const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement('canvas');
@@ -462,19 +473,26 @@ async function drawScaled(blob, edge, type, quality) {
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
   canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close?.();
-  return canvas.toDataURL(type, quality);
+  const made = ENCODINGS.map((type) => encode(canvas, type, quality)).filter(Boolean);
+  if (!made.length) return { mime: 'image/png', url: canvas.toDataURL() };
+  return made.reduce((best, one) => (one.url.length < best.url.length ? one : best));
 }
 
 // -> { mime, data, thumb } | null. `data` is base64 without the data: prefix,
 // which is the shape /api/ask takes; `thumb` is a small data URL kept with the
 // question in the log, because a question about a picture makes no sense
-// afterwards without the picture.
+// afterwards without the picture. The two are encoded independently: a picture
+// can easily come out as WebP at one size and JPEG at the other.
 async function prepareShot(blob) {
   if (!blob || !IMAGE_TYPES.includes(blob.type)) return null;
   try {
-    const full = await drawScaled(blob, SEND_EDGE, 'image/jpeg', 0.82);
-    const thumb = await drawScaled(blob, THUMB_EDGE, 'image/jpeg', 0.6);
-    return { mime: 'image/jpeg', data: full.slice(full.indexOf(',') + 1), thumb };
+    const full = await drawScaled(blob, SEND_EDGE, 0.82);
+    const thumb = await drawScaled(blob, THUMB_EDGE, 0.6);
+    return {
+      mime: full.mime,
+      data: full.url.slice(full.url.indexOf(',') + 1),
+      thumb: thumb.url,
+    };
   } catch {
     return null; // an image the canvas cannot decode is not worth a dialog
   }
@@ -507,15 +525,13 @@ async function learnerProfile() {
   const profile = buildProfile(Array.isArray(wordlist) ? wordlist : []);
   if (Number.isInteger(hskLevel)) profile.hskLevel = hskLevel;
   // The interview is a measurement rather than the app's working guess, so it
-  // travels separately — with its summary, which says what came apart.
-  const [placed] = Array.isArray(results) ? results : [];
-  if (placed && Number.isInteger(placed.level)) {
-    profile.placement = {
-      level: placed.level,
-      at: placed.at || null,
-      summary: placed.report?.summary || '',
-    };
-  }
+  // travels separately — with its summary, which says what came apart, and the
+  // levels of the sittings before it. One placement says where they are; the
+  // sequence says whether the last few months moved anything, which is the
+  // difference between "you are at HSK 4" and "you were stuck at 3 for half a
+  // year and have just cleared 4". The tutor is free to ignore all of it.
+  const digest = placementDigest(Array.isArray(results) ? results : []);
+  if (digest) profile.placement = digest;
   return profile;
 }
 
@@ -632,7 +648,7 @@ export function createTutor(options) {
   let shots = [];        // images attached to the question being written
   // The last set actually sent, at full size, kept for the rest of the sitting
   // so follow-up questions are still about the same picture. Not stored: only
-  // the small thumbnails go to disk (see prune()).
+  // the small thumbnails go to disk (see lib/chatlog.js).
   let sentShots = [];
   let busy = false;
   let viewingHistory = false; // the list of past chats is up instead of the log
@@ -851,7 +867,7 @@ export function createTutor(options) {
         wrap.append(shelf);
       }
       if (msg.quote) bubble.append(el('div', 'quoted', msg.quote));
-      bubble.append(el('div', null, msg.content));
+      bubble.append(el('div', 'text', msg.content));
       wrap.append(bubble);
     } else if (msg.role === 'error') {
       wrap.append(el('div', 'bubble', msg.content));
@@ -975,29 +991,29 @@ export function createTutor(options) {
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  // The tutor rides on the same capability token as sync and the news digest.
+  // The tutor rides on the same capability token as sync and the news digest,
+  // against a Worker the learner deploys themselves.
   function showSetup() {
     logEl.replaceChildren();
     const box = el('div', 'tutor-empty');
     box.append(el('div', null,
-      'The tutor answers on your own AI API key, so your questions are never '
-      + 'anyone else\'s bill. Create a private token here, then paste a key into '
-      + 'the extension\'s Options page — everything else on this page works '
-      + 'without either.'));
-    const btn = el('button', 'starter', 'Enable the tutor');
-    btn.type = 'button';
-    btn.addEventListener('click', async () => {
-      await chrome.storage.local.set({
-        syncMeta: { token: newToken(), serverUrl: DEFAULT_SERVER_URL, cursor: 0, lastPushAt: 0 },
-      });
-      chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
-      renderChat();
-    });
-    const options = el('button', 'starter', 'Open Options');
+      'The tutor runs through a small Cloudflare Worker you deploy to your own '
+      + 'account, and answers on your own AI API key — so your questions are '
+      + 'never anyone else\'s bill and never cross anyone else\'s server. Set the '
+      + 'Worker up in Options (about two minutes), paste a key there too, and '
+      + 'everything else on this page keeps working without either.'));
+    const wrap = el('div', 'starters');
+    if (hasDefaultServer()) {
+      const btn = el('button', 'starter', 'Enable the tutor');
+      btn.type = 'button';
+      btn.addEventListener('click', async () => { await pairWith(); renderChat(); });
+      wrap.append(btn);
+    }
+    const options = el('button', 'starter',
+      hasDefaultServer() ? 'Open Options' : 'Set it up in Options');
     options.type = 'button';
     options.addEventListener('click', () => chrome.runtime.openOptionsPage());
-    const wrap = el('div', 'starters');
-    wrap.append(btn, options);
+    wrap.append(options);
     box.append(wrap);
     logEl.append(box);
   }

@@ -192,6 +192,55 @@ await test('the learner\'s level, deck and placement reach the prompt', async ()
   }
 });
 
+await test('every placement the learner has sat reaches the prompt, oldest first', async () => {
+  const model = stubModel('You have moved a level since March.');
+  try {
+    await worker.fetch(post({
+      question: 'Am I getting anywhere?',
+      profile: {
+        ...PROFILE,
+        placement: {
+          ...PROFILE.placement,
+          history: [
+            { level: 0, at: Date.UTC(2025, 10, 2) },
+            { level: 3, at: Date.UTC(2026, 2, 14) },
+            { level: 4, at: Date.UTC(2026, 6, 1) },
+          ],
+        },
+      },
+    }, auth), { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.match(model.seen[0].input,
+      /Every placement they have sat, oldest first: below HSK 1 \(2025-11\), HSK 3 \(2026-03\), HSK 4 \(2026-07\)\./,
+      'the earlier sittings are missing');
+  } finally {
+    model.restore();
+  }
+});
+
+await test('a placement history that is junk, or one sitting long, is left out', async () => {
+  const model = stubModel('ok');
+  const trail = (history) => post({
+    question: 'q', profile: { ...PROFILE, placement: { ...PROFILE.placement, history } },
+  }, auth);
+  try {
+    // One row is the placement itself, which the line above it already stated.
+    await worker.fetch(trail([{ level: 4, at: Date.UTC(2026, 6, 1) }]),
+      { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.doesNotMatch(model.seen[0].input, /Every placement they have sat/);
+
+    // A timestamp from a broken clock loses its date rather than putting
+    // "(+275760-09)" in front of the model, and an off-scale level is dropped.
+    await worker.fetch(trail([
+      { level: 3, at: 8.64e15 }, { level: 44, at: Date.UTC(2026, 0, 1) },
+      'nonsense', { level: 5, at: Date.UTC(2026, 6, 1) },
+    ]), { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    assert.match(model.seen[1].input,
+      /Every placement they have sat, oldest first: HSK 3, HSK 5 \(2026-07\)\./);
+  } finally {
+    model.restore();
+  }
+});
+
 await test('a huge deck is clamped rather than shipped whole', async () => {
   const model = stubModel('ok');
   try {

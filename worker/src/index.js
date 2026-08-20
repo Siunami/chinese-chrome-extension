@@ -18,6 +18,23 @@ const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const NEW_USERS_PER_IP_PER_HOUR = 10;
 const SQL_CHUNK = 50; // stay well under D1's bound-parameter limit
 
+// /api/sync has no model call behind it, so nothing here spends the caller's
+// money — but every call is D1 reads and writes on the Worker OWNER's account,
+// and a pairing token self-provisions on first sight. Without a ceiling one
+// token can grind the deployment's D1 quota flat and take every other
+// learner's sync down with it, which is the cheapest way to break a shared
+// deployment from the outside.
+//
+// Set well clear of honest use rather than close to it. The heaviest real hour
+// is a long review session on the phone, where each grade schedules a push a
+// few seconds out (pwa/app.js) on top of a 60s poll, plus the extension's own
+// 30s debounce and 30min alarm on the same token — a few hundred calls at the
+// very top end. A client above this is malfunctioning or hostile, and the
+// answer is the same either way: come back later. Clients treat any non-2xx as
+// a retriable no-op (they don't advance their cursor), so a 429 costs a
+// learner nothing but a delay.
+const SYNC_PER_HOUR = 1200;
+
 // /api/news: read current news — on the topics the learner is studying, or on
 // a topic they searched for — and write them an original Mandarin passage at
 // their level. Grounding is Google News RSS gathered here for every provider
@@ -126,20 +143,51 @@ function validCard(doc) {
   return JSON.stringify(doc).length <= MAX_DOC_BYTES;
 }
 
+// The address a new pairing is counted against.
+//
+// An IPv4 client is one address and counts as itself. An IPv6 client is
+// normally handed a whole /64 — 2^64 addresses it can source from freely — so
+// counting full v6 addresses made NEW_USERS_PER_IP_PER_HOUR an IPv4-only
+// speed bump: rotate the low half and every request looks like a new address.
+// Bucket v6 down to its /64 (the first four hextets) so the cap means the same
+// thing on both protocols.
+//
+// Hextets are normalized (lowercased, leading zeros stripped) so one client
+// always produces one bucket string whatever form the address arrives in. Rows
+// written before this existed hold a full address; they simply stop matching,
+// which restarts the hourly counter once and loses nothing.
+export function ipBucket(ip) {
+  const addr = String(ip || '').trim().toLowerCase().split('%')[0];
+  if (!addr) return 'unknown';
+  // No colon is IPv4 or 'unknown'; a dot alongside colons is an IPv4-mapped
+  // form (::ffff:1.2.3.4). Both identify a single client already.
+  if (!addr.includes(':') || addr.includes('.')) return addr;
+  const [head, tail] = addr.split('::');
+  const left = head.split(':').filter(Boolean);
+  const right = tail === undefined ? [] : tail.split(':').filter(Boolean);
+  // '::' stands for however many all-zero hextets are needed to reach 8.
+  const zeros = tail === undefined ? 0 : Math.max(0, 8 - left.length - right.length);
+  const hextets = [...left, ...Array(zeros).fill('0'), ...right];
+  // Suffixed so a bucket can never collide with a literal address, and so the
+  // stored value says plainly what it is.
+  return `${hextets.slice(0, 4).map((h) => h.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}
+
 async function getUser(db, tokenHash, ip, now) {
   const user = await db
     .prepare('SELECT id, version FROM users WHERE token_hash = ?')
     .bind(tokenHash)
     .first();
   if (user) return user;
+  const bucket = ipBucket(ip);
   const { recent } = await db
     .prepare('SELECT COUNT(*) AS recent FROM users WHERE created_ip = ? AND created_at > ?')
-    .bind(ip, now - 60 * 60 * 1000)
+    .bind(bucket, now - 60 * 60 * 1000)
     .first();
   if (recent >= NEW_USERS_PER_IP_PER_HOUR) return null;
   await db
     .prepare('INSERT INTO users (token_hash, version, created_at, last_seen_at, created_ip) VALUES (?, 0, ?, ?, ?)')
-    .bind(tokenHash, now, now, ip)
+    .bind(tokenHash, now, now, bucket)
     .run();
   return db.prepare('SELECT id, version FROM users WHERE token_hash = ?').bind(tokenHash).first();
 }
@@ -212,6 +260,15 @@ async function handleSync(request, env) {
   const ip = request.headers.get('cf-connecting-ip') || 'unknown';
   const user = await getUser(db, await sha256Hex(token), ip, now);
   if (!user) return json({ error: 'too many new pairings from this address; try later' }, 429);
+
+  await ensureUsageLog(db);
+  if (await usageLastHour(db, user.id, 'sync', now) >= SYNC_PER_HOUR) {
+    return json({ error: `sync limit reached (${SYNC_PER_HOUR} per hour); try again later` }, 429);
+  }
+  // Counted on arrival, unlike the model-backed endpoints, which count on
+  // success. What this cap bounds is the D1 work below — a call that goes on
+  // to fail has already spent it, so not counting it would leave the hole open.
+  await recordUsage(db, user.id, 'sync', now);
 
   const docs = new Map(); // card_key -> validated incoming doc
   for (const raw of incoming) {
@@ -1152,6 +1209,31 @@ function wordList(value) {
     .map((w) => w.trim().slice(0, MAX_WORD_CHARS));
 }
 
+// The placements before this one, as one line: "HSK 2 (2026-03), HSK 3
+// (2026-06)". Clamped and re-dated here rather than trusted, like every other
+// list that arrives from a client and goes into a prompt — the dates are the
+// point of the line, so a nonsense timestamp drops its entry instead of
+// putting "HSK 3 (+275760-09)" in front of the model.
+const MAX_TRAIL = 10;
+
+function placementTrail(history) {
+  const rows = (Array.isArray(history) ? history : [])
+    .slice(-MAX_TRAIL)
+    .map((row) => {
+      if (!row || typeof row !== 'object') return null;
+      const level = Number(row.level);
+      if (!Number.isInteger(level) || level < 0 || level > 9) return null;
+      const at = Number(row.at);
+      const when = Number.isFinite(at) && at > 0 && at < 4102444800000
+        ? new Date(at).toISOString().slice(0, 7) : '';
+      const name = level === 0 ? 'below HSK 1' : `HSK ${level}`;
+      return when ? `${name} (${when})` : name;
+    })
+    .filter(Boolean);
+  // One row is the placement itself, which the line above already stated.
+  return rows.length > 1 ? rows.join(', ') : '';
+}
+
 function learnerBlock(body) {
   const profile = body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile)
     ? body.profile : null;
@@ -1168,6 +1250,11 @@ function learnerBlock(body) {
     // stating separately from the level the app is currently teaching at.
     lines.push(`- A placement interview put them at HSK ${Number(placed.level)}`
       + `${askText(placed.summary, 300) ? `: ${askText(placed.summary, 300)}` : '.'}`);
+    // And every earlier sitting, oldest first. A tutor that can see the line
+    // can answer "am I getting anywhere?" — the question a learner half a year
+    // in actually has — instead of restating today's number back at them.
+    const history = placementTrail(placed.history);
+    if (history) lines.push(`- Every placement they have sat, oldest first: ${history}.`);
   }
   const counts = [];
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
@@ -1362,6 +1449,7 @@ The interview is adaptive, and the client owns the ladder. It tells you which HS
 
 WRITING THE TASK
 - Write it in Mandarin, pitched at the level you picked. One task per turn, two or three sentences at most.
+- The message names the script the learner reads — simplified or traditional. Write the task, and every correction, in THAT script.
 - Vary what you ask for across the interview: answer a question about their life, react to a situation, retell something you just said, explain a preference and why, translate one short English sentence, or complete a sentence you start. Do not ask the same kind of thing twice in a row.
 - Levels 1-2 may carry a short English gloss in brackets after the Chinese. Level 3 and up must be Chinese only — reading the question is part of the test.
 - Lean on words the learner's deck says they know, so a stumble is about the level and not about one unlucky word. Where the deck lists words they keep failing, work one in when it fits naturally.
@@ -1374,6 +1462,7 @@ MARKING THE PREVIOUS ANSWER
 - Mark against the target level, not against a native speaker. A perfectly good HSK 2 answer to an HSK 5 task is a low production mark at 5 — that is the measurement working, not harshness.
 - Answering in English, in pinyin, or with "I don't know" is real evidence: mark production 0 and say so in the comment. Do not award marks for effort.
 - errors: up to three concrete ones. Quote the learner's own words in "span", give the corrected Chinese in "correction", and say what the rule is in one short English clause. Only real errors — do not invent them to look thorough, and do not list stylistic preferences as errors.
+- A character is never an error for being the other script's form of the right word. 博物館 is not a misspelling of 博物馆, and neither is a "correction" that only swaps one script for the other. Writing in the script the message names is correct by definition; mark the Chinese, not the characters it is written with.
 - comment: one short English sentence the learner will read afterwards. Specific, not "good job".
 
 THE FINAL TURN
@@ -1413,6 +1502,17 @@ function buildPlacementPrompt(body, allowed) {
   parts.push(allowed.length > 1
     ? `Allowed levels for this turn: ${allowed.join(', ')}. Suggested: HSK ${target}.`
     : `This turn must be aimed at HSK ${target}.`);
+
+  // Which script the learner reads is the app's 简/繁 toggle, and an examiner
+  // that is not told marks a traditional reader's 博物館 as a misspelling of
+  // 博物馆 — a "correction" that is wrong twice over: it is not an error, and
+  // saving it puts a card in their deck in the script they do not read.
+  parts.push(body.script === 'trad'
+    ? 'The learner reads and writes TRADITIONAL characters. Write this turn\'s task in '
+      + 'traditional. Their traditional forms are correct — never list one as an error and '
+      + 'never "correct" one to simplified. Write any correction in traditional too.'
+    : 'The learner reads and writes SIMPLIFIED characters. Write this turn\'s task, and any '
+      + 'correction, in simplified.');
 
   for (const rubric of rubrics) {
     const lines = [];

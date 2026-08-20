@@ -10,7 +10,17 @@ export function fakeDb({ users = [], usage = [], news = new Map() } = {}) {
       if (sql.includes('FROM users WHERE token_hash')) {
         return users.find((u) => u.token_hash === args[0]) || null;
       }
-      if (sql.includes('COUNT(*) AS recent FROM users')) return { recent: 0 };
+      // The per-address pairing cap. Counted faithfully rather than stubbed to
+      // zero, so a test can assert which addresses share a bucket (see
+      // ipBucket in the Worker) — that grouping IS the rate limit.
+      if (sql.includes('COUNT(*) AS recent FROM users')) {
+        const [createdIp, since] = args;
+        return {
+          recent: users.filter(
+            (u) => u.created_ip === createdIp && u.created_at > since,
+          ).length,
+        };
+      }
       // The per-user news cache. Empty by default, so a test asks the model.
       if (sql.includes('FROM news WHERE user_id')) return news.get(args[0]) || null;
       if (sql.includes('COUNT(*) AS recent FROM usage_log')) {
@@ -25,7 +35,15 @@ export function fakeDb({ users = [], usage = [], news = new Map() } = {}) {
     },
     async run() {
       if (sql.startsWith('INSERT INTO users')) {
-        users.push({ id: users.length + 1, version: 0, token_hash: args[0] });
+        // Column order matches the Worker's INSERT: token_hash, created_at,
+        // last_seen_at, created_ip.
+        users.push({
+          id: users.length + 1,
+          version: 0,
+          token_hash: args[0],
+          created_at: args[1],
+          created_ip: args[3],
+        });
       } else if (sql.startsWith('INSERT INTO usage_log')) {
         usage.push({ user_id: args[0], kind: args[1], created_at: args[2] });
       } else if (sql.startsWith('INSERT INTO news')) {
@@ -39,6 +57,7 @@ export function fakeDb({ users = [], usage = [], news = new Map() } = {}) {
     prepare: (sql) => statement(sql),
     batch: async (statements) => statements.map(() => ({ meta: { changes: 1 } })),
     _usage: usage,
+    _users: users,
     // Calls of one kind, for asserting that a rejected request was not logged.
     countOf: (kind) => usage.filter((r) => r.kind === kind).length,
   };

@@ -58,6 +58,42 @@ await check('hsk.html renders the full guide body', async () => {
     assert.ok(heads.includes(want), `missing "${want}"; got ${heads.join(', ')}`);
   }
 });
+await check('the guide exposes the complete level list without rendering thousands of rows', async () => {
+  await hsk.waitFor('document.querySelectorAll(".vocab-table tbody tr").length === 100',
+    'the first vocabulary page');
+  const state = await hsk.evalJs(`(() => ({
+    meta: document.querySelector('.vocab-meta')?.textContent,
+    rows: document.querySelectorAll('.vocab-table tbody tr').length,
+    practice: [...document.querySelectorAll('.practice')].map((a) => a.textContent),
+  }))()`);
+  assert.match(state.meta, /1–100 of 500/, state.meta);
+  assert.equal(state.rows, 100, 'the entire list was mounted instead of one page');
+  assert.ok(state.practice.some((label) => /500 HSK 1 words/.test(label)),
+    `missing the HSK 1 practice set: ${state.practice.join(', ')}`);
+});
+await check('Chinese inside grammar and mistake titles is hover-highlightable', async () => {
+  assert.ok(await hsk.evalJs('document.querySelectorAll(".point-name .lookup-char").length > 0'),
+    'grammar titles still render their Chinese as plain text');
+  assert.ok(await hsk.evalJs('document.querySelectorAll(".pitfall b .lookup-char").length > 0'),
+    'mistake titles still render their Chinese as plain text');
+});
+await check('the complete vocabulary list is searchable and paginated', async () => {
+  await hsk.evalJs(`(() => {
+    const input = document.querySelector('.vocab-search');
+    input.value = '爱好';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await hsk.waitFor('document.querySelector(".vocab-meta")?.textContent.includes("matches")',
+    'filtered vocabulary results');
+  assert.ok(await hsk.evalJs(
+    `[...document.querySelectorAll('.vocab-hanzi')].some((e) => e.textContent === '爱好')`),
+  'search did not retain the matching headword');
+  await hsk.evalJs(`(() => {
+    const input = document.querySelector('.vocab-search');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+});
 await check('readings are generated, not stored', async () => {
   const reading = await hsk.waitFor(
     'document.querySelector(".word .py")?.textContent || ""', 'vocabulary pinyin');
@@ -299,16 +335,28 @@ await check('the guides open the tutor as a drawer, not a docked column', async 
 // store both forms. A guide is written in simplified, so flipping to
 // traditional has to convert it — and by word, so 发 lands right.
 await check('flipping to traditional converts the guide, and back again', async () => {
-  await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
-  await hsk.waitFor('!!document.querySelector(".passage p")', 'the passage');
+  // Flipping the preference re-renders the guide, and the body is emptied to
+  // "Loading…" while the conversion goes to the dictionary and back. So "the
+  // passage is no longer what it was" is true of that gap as well as of the
+  // conversion, and a wait that settles for it goes on to read a guide with no
+  // passage in it at all. Every wait below is for a rendered passage, not
+  // merely a changed one.
+  const rendered = (test) => `(() => {
+    if (document.querySelector('#guide .empty')) return false;
+    const node = document.querySelector('.passage');
+    if (!node || !node.querySelector('p')) return false;
+    const text = node.textContent;
+    return ${test};
+  })()`;
   const passage = () => hsk.evalJs('document.querySelector(".passage").textContent');
+
+  await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
+  await hsk.waitFor(rendered('!!text'), 'the passage');
   const before = await passage();
   assert.ok(/[\u4e00-\u9fff]/.test(before), 'no Chinese in the guide to convert');
 
   await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "trad-first" })');
-  await hsk.waitFor(
-    `document.querySelector('.passage')?.textContent !== ${JSON.stringify(before)}`,
-    'the guide to convert');
+  await hsk.waitFor(rendered(`text !== ${JSON.stringify(before)}`), 'the guide to convert');
   const after = await passage();
   assert.notEqual(after, before, 'the guide did not change script');
   // Converted, not mangled: same length, still Chinese, no empty gaps.
@@ -317,9 +365,7 @@ await check('flipping to traditional converts the guide, and back again', async 
   assert.ok(/[\u4e00-\u9fff]/.test(after));
 
   await hsk.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
-  await hsk.waitFor(
-    `document.querySelector('.passage')?.textContent === ${JSON.stringify(before)}`,
-    'the guide to convert back');
+  await hsk.waitFor(rendered(`text === ${JSON.stringify(before)}`), 'the guide to convert back');
   assert.deepEqual(hsk.errors, []);
 });
 await check('hsk.html raised no page errors', () => assert.deepEqual(hsk.errors, []));
@@ -453,6 +499,10 @@ await check('the placement interview runs to a report and lands on the right lev
   await place.waitFor('!!document.querySelector("#view .panel")', 'the invitation');
   await place.evalJs(`chrome.storage.local.set({ syncMeta: {
     token: 'smoketokensmoketokensmoketoken', serverUrl: location.origin, cursor: 0, lastPushAt: 0 } })`);
+  // This run is the simplified baseline, and the toggle is one setting for the
+  // whole app — so pin it rather than inheriting whatever the checks above left
+  // behind, which is a way for a failure up there to come out as a puzzle here.
+  await place.evalJs('chrome.storage.sync.set({ hanziPref: "simp-first" })');
   await place.evalJs(
     '[...document.querySelectorAll("#view button")].find(b => /Start/.test(b.textContent)).click()');
   await place.waitFor('document.querySelectorAll(".log .msg.examiner .zh").length > 0',
@@ -535,7 +585,49 @@ await check('the interview sent the rubric, the deck and the transcript', async 
   assert.equal(second.answer, '我今天学习了中文。');
   assert.equal(typeof second.answeredLevel, 'number');
   assert.ok(second.history.length >= 1, 'the transcript did not travel');
+  assert.equal(first.script, 'simp', 'the turn never said which script to write in');
   assert.equal(calls[calls.length - 1].finish, true, 'the run never asked for a report');
+});
+
+// The interview was the one place the 简/繁 toggle did not reach: a traditional
+// reader was asked questions in simplified, and their 博物館 came back as a
+// correction saying the character should have been 馆 — a correction that is
+// not one, and that goes into the deck in the script they do not read. The
+// examiner is now told which script to write in, and the page converts what
+// comes back regardless, which is what this drives: the scripted examiner
+// answers in simplified whatever it is told.
+await check('the report and the interview follow the 简/繁 toggle', async () => {
+  await place.evalJs('document.querySelector(\'.zx-script-btn[data-pref="trad-first"]\').click()');
+  await place.waitFor(
+    'document.querySelector(".transcript .zh").textContent.includes("什麼")',
+    'the transcript in traditional');
+  assert.match(await place.evalJs('document.querySelector(".fix .zh").textContent'),
+    /我很高興/, 'a correction stayed in simplified for a traditional reader');
+  // The learner's own words are not rewritten: the "you wrote" line beside a
+  // correction is what they typed, not a converted copy of it.
+  assert.equal(await place.evalJs('document.querySelector(".fix .was").textContent'),
+    '我是很高兴');
+  await place.shot('placement-traditional');
+
+  // And a run started in traditional says so, so the examiner writes its next
+  // task in it rather than being left to guess.
+  await place.evalJs(
+    '[...document.querySelectorAll("#view button")].find(b => /Sit it again/.test(b.textContent)).click()');
+  await place.waitFor('document.querySelectorAll(".log .msg.examiner .zh").length > 0',
+    'the first question of the new run');
+  const calls = await (await fetch(`${base}/__placement`)).json();
+  assert.equal(calls[calls.length - 1].script, 'trad', 'the turn asked for the wrong script');
+  assert.match(await place.evalJs('document.querySelector(".log .msg.examiner .zh").textContent'),
+    /什麼/, 'the question was left in simplified');
+
+  // Put the page back: nothing was answered, so the abandoned run leaves the
+  // standing report alone, and the rest of the run reads simplified.
+  await place.evalJs(
+    '[...document.querySelectorAll("#view button")].find(b => /Stop the interview/.test(b.textContent)).click()');
+  await place.waitFor('!!document.querySelector("#view .headline")', 'the standing report');
+  await place.evalJs('document.querySelector(\'.zx-script-btn[data-pref="simp-first"]\').click()');
+  await place.waitFor(
+    'document.querySelector(".transcript .zh").textContent.includes("什么")', 'the flip back');
 });
 
 await check('a finished placement is what the page opens on next time', async () => {
@@ -550,6 +642,63 @@ await check('a finished placement is what the page opens on next time', async ()
   assert.deepEqual(again.errors, []);
   again.close();
 });
+// Sitting it a second time is the point of the thing: one placement is a
+// number, and a pile of them is the only evidence in the app that six months
+// of study moved anything. Two older sittings are planted here rather than
+// sat, because what is being checked is the history — that nothing is dropped,
+// that the line is drawn oldest-first, and that an old report still opens.
+await check('every past sitting is kept, charted, and openable', async () => {
+  const past = (at, level, over = {}) => JSON.stringify({
+    at, level, confidence: 'medium', studyLevel: level + 1, turns: 10,
+    comprehension: 2, production: 2,
+    perLevel: Array.from({ length: 9 }, (_, i) => ({
+      level: i + 1, probes: i + 1 <= level ? 2 : 0, score: i + 1 <= level ? 0.8 : null,
+      verdict: i + 1 <= level ? 'sustained' : 'untested',
+    })),
+    ...over,
+  });
+  // Older than the run just sat, and the older of the two has lost its
+  // transcript to the trim — as every sitting past the recent few will.
+  await place.evalJs(`chrome.storage.local.get('placementResults').then((r) => {
+    const kept = r.placementResults || [];
+    return chrome.storage.local.set({ placementResults: [...kept,
+      ${past(Date.UTC(2026, 2, 14), 3, { report: { summary: 'Getting there.' }, transcript: [{ level: 3, prompt: '你好吗？', answer: '很好', assess: { comprehension: 3, production: 2, errors: [], comment: 'ok' } }] })},
+      ${past(Date.UTC(2025, 10, 2), 1, { summary: 'Early days.' })}] });
+  })`);
+  const history = await openPage('placement.html');
+  await history.waitFor('!!document.querySelector(".trend-box")', 'the placement trend');
+
+  assert.equal(await history.evalJs('document.querySelectorAll(".tr-col").length'), 3,
+    'the chart lost a sitting');
+  assert.equal(await history.evalJs('document.querySelectorAll("table.hist tr").length'), 3,
+    'the table lost a sitting');
+  assert.match(await history.evalJs(
+    'document.querySelector(".trend-box").closest("section").querySelector(".sub").textContent'),
+  /Up 3 levels since/, 'the history did not say what moved');
+  // The oldest kept only its numbers, and the row says so before it is opened.
+  assert.match(await history.evalJs('document.querySelector("table.hist tr:last-child").textContent'),
+    /numbers only/);
+
+  // An old sitting opens its own report, and says it is not where you stand.
+  await history.evalJs(
+    'document.querySelector("table.hist tr:last-child button.link").click()');
+  await history.waitFor('/A past placement/.test(document.querySelector("h2").textContent)',
+    'the old report');
+  assert.equal(await history.evalJs('document.querySelector(".headline .level b").textContent'),
+    'HSK 1');
+  assert.ok(await history.evalJs('!!document.querySelector(".gone")'),
+    'a report with no transcript did not say so');
+
+  // And back, without a reload, to the placement that is actually current.
+  await history.evalJs(
+    '[...document.querySelectorAll("#view button")].find(b => /Back to the latest/.test(b.textContent)).click()');
+  await history.waitFor('document.querySelector(".headline .level b").textContent === "HSK 4"',
+    'the latest placement');
+  await history.shot('placement-history');
+  assert.deepEqual(history.errors, []);
+  history.close();
+});
+
 await check('placement.html raised no page errors', () => assert.deepEqual(place.errors, []));
 place.close();
 
@@ -581,6 +730,272 @@ await check('the options page saves an AI key and rejects a non-key', async () =
   assert.equal(await stored(), key);
   assert.deepEqual(opts.errors, []);
 });
+
+// A backup is only worth anything if it round-trips through a real file. The
+// unit tests cover what goes in it and what a restore means; this covers the
+// two halves nothing else can — that the page actually reads all of storage
+// into a downloadable blob, and that handing that blob back to the file input
+// puts the state back.
+//
+// The download is caught at URL.createObjectURL rather than let out to disk:
+// the file's bytes are the assertion.
+const downloadBackup = async () => opts.evalJs(`(async () => {
+  let blob = null;
+  const create = URL.createObjectURL;
+  const click = HTMLAnchorElement.prototype.click;
+  URL.createObjectURL = (b) => { blob = b; return 'blob:captured'; };
+  HTMLAnchorElement.prototype.click = function () {};
+  try {
+    document.getElementById('backupDownload').click();
+    for (let i = 0; i < 100 && !blob; i++) await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    URL.createObjectURL = create;
+    HTMLAnchorElement.prototype.click = click;
+  }
+  return blob && blob.text();
+})()`);
+
+let backupText = null;
+await check('the options page downloads everything in storage as one file', async () => {
+  await opts.evalJs(`Promise.all([
+    chrome.storage.local.set({ hskLevel: 4, newsDifficulty: 'harder' }),
+    chrome.storage.sync.set({
+      theme: 'dark', toneColors: true, exampleCount: 5, showHints: true,
+      newPerDay: 20, maxPerDay: 90,
+    }),
+  ])`);
+  backupText = await downloadBackup();
+  assert.ok(backupText, 'no file was produced');
+  const backup = JSON.parse(backupText);
+  assert.equal(backup.format, 'zhongwen-explorer-backup');
+  assert.equal(backup.extensionVersion, await opts.evalJs('chrome.runtime.getManifest().version'));
+  assert.equal(backup.local.hskLevel, 4);
+  assert.equal(backup.local.newsDifficulty, 'harder');
+  // The key the check above saved, because the box is ticked.
+  assert.match(backup.local.aiKey, /^sk-x+$/);
+  // Settings live in the other storage area; a backup with an empty `sync` is
+  // the shape of this feature silently only half working.
+  assert.ok(Object.keys(backup.sync).length >= 5, 'no settings in the backup');
+});
+
+await check('unticking the box leaves the credentials out of the file', async () => {
+  await opts.evalJs(`(() => {
+    const box = document.getElementById('backupSecrets');
+    box.checked = false;
+  })()`);
+  const backup = JSON.parse(await downloadBackup());
+  assert.equal('aiKey' in backup.local, false, 'the API key was written anyway');
+  assert.equal('syncMeta' in backup.local, false, 'the pairing code was written anyway');
+  assert.equal(backup.local.hskLevel, 4, 'everything else should still be there');
+  await opts.evalJs(`(() => { document.getElementById('backupSecrets').checked = true; })()`);
+});
+
+await check('restoring that file puts the state back', async () => {
+  const result = await opts.evalJs(`(async () => {
+    // The restore asks before it writes; this test is the yes.
+    window.confirm = () => true;
+    await chrome.storage.local.set({ hskLevel: 9, newsDifficulty: 'easier' });
+    await chrome.storage.sync.set({ theme: 'light' });
+    document.getElementById('theme').value = 'light';
+    // Blank it first: the line still holds the last message, and waiting for a
+    // word that is already on screen is waiting for nothing.
+    document.getElementById('backupStatus').textContent = '';
+    const input = document.getElementById('backupFile');
+    const dt = new DataTransfer();
+    dt.items.add(new File([${JSON.stringify(backupText)}], 'backup.json',
+      { type: 'application/json' }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const status = document.getElementById('backupStatus');
+    for (let i = 0; i < 100 && !status.textContent; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return {
+      status: status.textContent,
+      local: await chrome.storage.local.get(['hskLevel', 'newsDifficulty']),
+      theme: (await chrome.storage.sync.get('theme')).theme,
+      shown: document.getElementById('theme').value,
+    };
+  })()`);
+  assert.match(result.status, /^Restored\./);
+  assert.equal(result.local.hskLevel, 4, 'the level was not restored');
+  assert.equal(result.local.newsDifficulty, 'harder');
+  assert.equal(result.theme, 'dark', 'settings were not restored');
+  // And the page redraws itself, rather than showing what it read on load.
+  assert.equal(result.shown, 'dark', 'the page still shows the pre-restore settings');
+});
+
+// The failure this has to survive: a browser with no room left. A restore is
+// the one moment the app writes everything it has at once, so an all-or-nothing
+// write would let a news archive that does not fit take the deck down with it.
+await check('a restore that does not fit still puts back everything that does', async () => {
+  const result = await opts.evalJs(`(async () => {
+    window.confirm = () => true;
+    // A backup carrying one bulky key and one small one, from a build with a
+    // key this extension has never heard of.
+    const file = JSON.stringify({
+      format: 'zhongwen-explorer-backup',
+      version: 1,
+      createdAt: 1700000000000,
+      local: {
+        wordlist: [],
+        newsHistory: [{ id: 'x', generatedAt: 1, data: { headline: 'x' } }],
+        progressStreak: { days: 12 },
+      },
+      sync: {},
+    });
+    // Stand in for a full profile: refuse any write carrying the archive,
+    // which is what hitting the quota looks like from here.
+    const realSet = chrome.storage.local.set.bind(chrome.storage.local);
+    chrome.storage.local.set = (values) => (values && 'newsHistory' in values
+      ? Promise.reject(new Error('QUOTA_BYTES quota exceeded'))
+      : realSet(values));
+    const cardsBefore =
+      ((await chrome.storage.local.get('wordlist')).wordlist || []).length;
+    try {
+      const status = document.getElementById('backupStatus');
+      status.textContent = '';
+      const input = document.getElementById('backupFile');
+      const dt = new DataTransfer();
+      dt.items.add(new File([file], 'backup.json', { type: 'application/json' }));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      for (let i = 0; i < 100 && !status.textContent; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const after = await chrome.storage.local.get(['wordlist', 'newsHistory', 'progressStreak']);
+      return {
+        status: status.textContent,
+        warned: status.classList.contains('warn'),
+        cardsBefore,
+        cardsAfter: (after.wordlist || []).length,
+        smallKey: after.progressStreak,
+        archive: after.newsHistory || null,
+      };
+    } finally {
+      chrome.storage.local.set = realSet;
+    }
+  })()`);
+  // The deck is written first and on its own, so it lands however full the
+  // browser is.
+  assert.equal(result.cardsAfter, result.cardsBefore, 'the deck did not survive');
+  // And so does everything else small enough to fit, rather than being lost
+  // alongside the one key that did not.
+  assert.equal(JSON.stringify(result.smallKey), '{"days":12}',
+    `the small key did not land: ${JSON.stringify(result)}`);
+  assert.equal(result.archive, null, 'the archive was written after all');
+  // What did not fit is named in words, not left to be discovered later.
+  assert.match(result.status, /news archive/);
+  assert.match(result.status, /out of room/);
+  assert.ok(result.warned, 'a partial restore was reported as an unqualified success');
+});
+
+await check('the page says how much of this browser the app is using', async () => {
+  const usage = await opts.evalJs('document.getElementById("backupUsage").textContent');
+  assert.match(usage, /holding \d+(\.\d+)? (KB|MB) of your learning/);
+});
+
+await check('the page says when the last file was written and whether it is still true', async () => {
+  // Downloading and restoring both date this install, so by now the page has
+  // something to say — and nothing has happened since that is not in the file.
+  const settled = await opts.evalJs('document.getElementById("backupFreshness").textContent');
+  assert.match(settled, /Last backed up on .+nothing has changed since/);
+});
+
+await check('a file that is not a backup is refused rather than applied', async () => {
+  const status = await opts.evalJs(`(async () => {
+    window.confirm = () => true;
+    const el = document.getElementById('backupStatus');
+    el.textContent = '';
+    const input = document.getElementById('backupFile');
+    const dt = new DataTransfer();
+    dt.items.add(new File(['{"hello":"world"}'], 'notes.json', { type: 'application/json' }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    for (let i = 0; i < 100 && !el.textContent; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return el.textContent;
+  })()`);
+  assert.match(status, /not a Zhongwen Explorer backup/);
+  assert.equal(
+    await opts.evalJs('chrome.storage.local.get("hskLevel").then((r) => r.hskLevel)'), 4);
+});
+// The navbar's one-click backup. The unit tests decide when it should appear;
+// this is the half only a browser can answer — that the button is in the bar of
+// an ordinary page, that pressing it writes a real file with the whole of
+// storage in it, and that it then stops asking.
+await check('the navbar stays quiet while everything here is in a file', async () => {
+  assert.equal(await opts.evalJs(
+    'document.querySelector(".zx-backup").hidden'), true);
+});
+
+await check('a week of unsaved work puts a backup button in the navbar', async () => {
+  const label = await opts.evalJs(`(async () => {
+    const WEEK = 7 * 24 * 60 * 60 * 1000;
+    await chrome.storage.local.set({
+      backupState: { at: Date.now() - 40 * 86400000, dirtySince: Date.now() - 2 * WEEK },
+    });
+    const btn = document.querySelector('.zx-backup');
+    for (let i = 0; i < 100 && btn.hidden; i++) await new Promise((r) => setTimeout(r, 50));
+    return { hidden: btn.hidden, text: btn.textContent, title: btn.title };
+  })()`);
+  assert.equal(label.hidden, false, 'the button never appeared');
+  assert.match(label.text, /Back up/);
+  // It has to say what it is about to do before it is pressed: this is the one
+  // control in the app that writes a file full of the learner's credentials.
+  assert.match(label.title, /2 weeks of learning/);
+  assert.match(label.title, /Downloads/);
+});
+
+await check('one click writes the whole of storage and the button stops asking', async () => {
+  const result = await opts.evalJs(`(async () => {
+    let blob = null;
+    const create = URL.createObjectURL;
+    const click = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = (b) => { blob = b; return 'blob:captured'; };
+    HTMLAnchorElement.prototype.click = function () {};
+    const btn = document.querySelector('.zx-backup');
+    try {
+      btn.click();
+      for (let i = 0; i < 100 && !blob; i++) await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      URL.createObjectURL = create;
+      HTMLAnchorElement.prototype.click = click;
+    }
+    return {
+      file: blob && await blob.text(),
+      text: btn.textContent,
+      state: (await chrome.storage.local.get('backupState')).backupState,
+    };
+  })()`);
+  assert.ok(result.file, 'no file was produced');
+  const backup = JSON.parse(result.file);
+  // The same complete dump the options page writes — not a lesser file for
+  // being taken from a button in a navbar.
+  assert.equal(backup.format, 'zhongwen-explorer-backup');
+  assert.equal(backup.local.hskLevel, 4);
+  assert.ok(Object.keys(backup.sync).length >= 5, 'no settings in the one-click file');
+  assert.equal('backupState' in backup.local, false, 'the file carries this install\'s clock');
+  // Confirmation in the button itself, since the file has gone somewhere the
+  // page cannot look.
+  assert.match(result.text, /Saved · \d+(\.\d+)? (KB|MB)/);
+  // And the reason it was asking is gone: nothing unsaved, dated at the file.
+  assert.equal(result.state.dirtySince, 0, 'the install is still marked unsaved');
+  assert.equal(result.state.at, backup.createdAt);
+
+  // Once the confirmation has had its three seconds, the button takes itself
+  // away rather than sitting there asking for a backup that already exists.
+  const gone = await opts.evalJs(`(async () => {
+    const btn = document.querySelector('.zx-backup');
+    for (let i = 0; i < 120 && !btn.hidden; i++) await new Promise((r) => setTimeout(r, 100));
+    return btn.hidden;
+  })()`);
+  assert.equal(gone, true, 'the button kept asking after it had been pressed');
+});
+
+await opts.shot('options-backup');
+await check('the options page raised no page errors', () => assert.deepEqual(opts.errors, []));
 opts.close();
 
 // --- the dashboard: every view is a tab, so the chrome never disappears ----
@@ -678,6 +1093,36 @@ dash.close();
 // made this a race decided by the order of everything above. The bug it guards
 // is a CSS rule beating `hidden`, so it sets `hidden` and looks at the pixels.
 const newsTab = await openPage('news.html');
+
+// The first thing every new install sees. The extension ships with no server —
+// DEFAULT_SERVER_URL is empty, because pointing it at somebody's deployment
+// makes them the custodian of every installer's deck — so the server-backed
+// features open on a setup screen instead of a one-click Enable that would
+// silently pair the learner with a stranger's Cloudflare account. The button
+// has to go to Options, and the one-click Enable must NOT be offered, since
+// there is nothing for it to pair with.
+await check('with no server deployed, news explains itself and points at Options', async () => {
+  // The deck gate is checked before the pairing gate, so there have to be
+  // enough words for the page to get as far as noticing there is no server.
+  await newsTab.evalJs(`chrome.storage.local.set({ wordlist: ${JSON.stringify(
+    Array.from({ length: 6 }, (_, i) => ({
+      cardType: 'word', simp: '朋友', trad: '朋友', pinyin: 'péng you', tones: '2,0',
+      defs: 'friend', savedAt: i + 1, lastSavedAt: i + 1, touches: 1, srs: null,
+    })),
+  )} })`);
+  await newsTab.evalJs('chrome.storage.local.remove(["syncMeta", "newsHistory"])');
+  await newsTab.evalJs('window.__stale = true');
+  await newsTab.evalJs('location.reload()');
+  await newsTab.waitFor('!window.__stale && !!document.querySelector(".setup")', 'the setup box');
+  const text = await newsTab.evalJs('document.querySelector(".setup").textContent');
+  assert.match(text, /your own account/, 'the setup box never says whose server it is');
+  const labels = await newsTab.evalJs(
+    'JSON.stringify([...document.querySelectorAll(".setup button")].map((b) => b.textContent))');
+  assert.match(labels, /Options/, 'no way through to the options page');
+  assert.doesNotMatch(labels, /Enable news/,
+    'offered one-click pairing with no server to pair to');
+});
+
 await check('the difficulty control is really hidden when it is hidden', async () => {
   await newsTab.waitFor('!!document.getElementById("app")', 'the digest container');
   assert.equal(await newsTab.evalJs(`(() => {
@@ -697,11 +1142,19 @@ const digest = (title, extra = {}) => ({
   glossary: [{ word: '垃圾', pinyin: 'lā jī', meaning: 'rubbish' }],
   sources: [], ...extra,
 });
+// Anchored to midnight rather than to "three hours ago", because the day
+// headings are the thing being checked and a suite run at 1am would otherwise
+// file this morning's article under Yesterday and fail on the clock rather
+// than on the code. Noon today and noon yesterday are Today and Yesterday at
+// every hour the suite might be run at.
+// Never in the future, so an article does not read as written in an hour's
+// time when the suite runs in the morning.
+const noon = Math.min(new Date().setHours(12, 0, 0, 0), Date.now());
 const HISTORY = [
-  { id: '2', generatedAt: Date.now() - 3 * 60 * 60 * 1000, data: digest('海边的塑料越来越少') },
+  { id: '2', generatedAt: noon, data: digest('海边的塑料越来越少') },
   {
     id: '1',
-    generatedAt: Date.now() - 27 * 60 * 60 * 1000,
+    generatedAt: noon - 24 * 60 * 60 * 1000,
     data: digest('新的地铁线开始试运行', { topic: { label: '科技', query: '科技 新闻' } }),
   },
 ];
@@ -1111,6 +1564,77 @@ await library.setViewport(1365, 900);
 await check('wordlist.html raised no page errors', () => assert.deepEqual(library.errors, []));
 library.close();
 
+// --- HSK practice: separate membership, one schedule ----------------------
+
+const hskReview = await openPage('review.html?hsk=2&scope=level');
+await check('an HSK level opens as a tracked flashcard set', async () => {
+  await hskReview.evalJs(`Promise.all([
+    chrome.storage.local.set({ wordlist: [], studyProgress: {} }),
+    chrome.storage.sync.set({ newPerDay: 15, maxPerDay: 60 }),
+  ])`);
+  await hskReview.evalJs('location.reload()');
+  await hskReview.waitFor('!!document.getElementById("reveal")', 'an HSK review card');
+  const heading = await hskReview.evalJs(`({
+    title: document.getElementById('reviewTitle').textContent,
+    set: document.getElementById('setbar').textContent,
+    type: document.querySelector('.card-type')?.textContent,
+  })`);
+  assert.equal(heading.title, 'HSK 2 vocabulary');
+  assert.match(heading.set, /769 unique cards from 772 syllabus entries/);
+  assert.match(heading.set, /shared with every other set and the saved library/);
+  assert.match(heading.type, /HSK 2/);
+});
+await check('grading an HSK card tracks it without adding it to the library', async () => {
+  await hskReview.evalJs('document.getElementById("reveal").click()');
+  await hskReview.waitFor('!!document.querySelector(".grade.g-good")', 'HSK grade buttons');
+  await hskReview.evalJs('document.querySelector(".grade.g-good").click()');
+  await hskReview.waitFor('!!document.getElementById("reveal")', 'the next HSK card');
+  const state = await hskReview.evalJs(`chrome.storage.local.get([
+    'wordlist', 'studyProgress',
+  ]).then((r) => ({ saved: (r.wordlist || []).length,
+    schedules: Object.keys(r.studyProgress || {}).length }))`);
+  assert.equal(state.saved, 0, 'HSK membership leaked into the saved library');
+  assert.equal(state.schedules, 1, 'the HSK grade did not create one shared schedule');
+});
+await check('adding a studied HSK word to the library carries over its schedule', async () => {
+  const before = await hskReview.evalJs(`chrome.storage.local.get('studyProgress').then((r) => {
+    const [key, srs] = Object.entries(r.studyProgress || {})[0];
+    return { key, srs };
+  })`);
+  await hskReview.evalJs(`chrome.runtime.sendMessage({
+    type: 'saveWord',
+    entry: (() => {
+      const [cardType, simp, trad, pinyin] = ${JSON.stringify('PLACEHOLDER')};
+      return { cardType, simp, trad, pinyin, tones: '', defs: 'HSK word' };
+    })(),
+  })`.replace(JSON.stringify('PLACEHOLDER'), `(${JSON.stringify(before.key)}).split('\\u0001')`));
+  const shared = await hskReview.evalJs(`chrome.storage.local.get([
+    'wordlist', 'studyProgress',
+  ]).then((r) => {
+    const word = r.wordlist[0];
+    const key = [word.cardType || 'word', word.simp || '', word.trad || word.simp || '',
+      word.pinyin || ''].join('\\u0001');
+    return { library: word.srs, shared: r.studyProgress[key] };
+  })`);
+  assert.deepEqual(shared.library, before.srs);
+  assert.deepEqual(shared.shared, before.srs);
+});
+await check('an HSK answer can add its current word explicitly', async () => {
+  await hskReview.evalJs('document.getElementById("reveal").click()');
+  await hskReview.waitFor('!!document.querySelector(".library-add:not([disabled])")',
+    'the add-to-library action');
+  const before = await hskReview.evalJs(
+    'chrome.storage.local.get("wordlist").then((r) => (r.wordlist || []).length)');
+  await hskReview.evalJs('document.querySelector(".library-add").click()');
+  await hskReview.waitFor('document.querySelector(".library-add")?.classList.contains("on")',
+    'the library confirmation');
+  const after = await hskReview.evalJs(
+    'chrome.storage.local.get("wordlist").then((r) => (r.wordlist || []).length)');
+  assert.equal(after, before + 1);
+});
+await check('HSK review raised no page errors', () => assert.deepEqual(hskReview.errors, []));
+hskReview.close();
+
 // --- the review card: silent on the question, full popup on the answer -----
 
 const review = await openPage('review.html');
@@ -1244,11 +1768,27 @@ await check('the tutor asks the Worker with the card as context', async () => {
 // another app — so the clipboard is the way in.
 await check('a pasted image is attached, shown with the question, and sent', async () => {
   await review.evalJs(`(async () => {
+    // A photo of a sign, near enough: big, detailed, and a multi-megabyte PNG
+    // on the clipboard — which is what the shrinking is for. A flat rectangle
+    // encodes to the same handful of bytes at every size and quality, and
+    // proves nothing about either.
     const canvas = document.createElement('canvas');
-    canvas.width = 40; canvas.height = 30;
+    canvas.width = 1600; canvas.height = 1200;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#b5232b';
-    ctx.fillRect(0, 0, 40, 30);
+    const grad = ctx.createLinearGradient(0, 0, 1600, 1200);
+    grad.addColorStop(0, '#b5232b'); grad.addColorStop(1, '#f2ead7');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 1600, 1200);
+    const pixels = ctx.getImageData(0, 0, 1600, 1200);
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      const n = (Math.random() - 0.5) * 30;
+      pixels.data[i] += n; pixels.data[i + 1] += n; pixels.data[i + 2] += n;
+    }
+    ctx.putImageData(pixels, 0, 0);
+    ctx.fillStyle = '#fff';
+    ctx.font = '120px sans-serif';
+    ctx.fillText('小心地滑', 120, 400);
+    ctx.fillText('请勿吸烟', 120, 700);
     const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
     const data = new DataTransfer();
     data.items.add(new File([blob], 'sign.png', { type: 'image/png' }));
@@ -1278,9 +1818,34 @@ await check('a pasted image is attached, shown with the question, and sent', asy
   await review.shot('tutor-image-sent');
   const asked = await (await fetch(`${base}/__lastask`)).json();
   assert.equal(asked.images?.length, 1, 'the image never reached the request');
-  assert.equal(asked.images[0].mime, 'image/jpeg', 'the image was not shrunk before sending');
+  // Whichever of the two encodings came out smaller — never the PNG a canvas
+  // falls back to when it cannot make the type it was asked for, which for a
+  // photograph is many times larger than either.
+  assert.ok(['image/webp', 'image/jpeg'].includes(asked.images[0].mime),
+    `sent as ${asked.images[0].mime}, which is not a format it was shrunk into`);
   assert.ok(asked.images[0].data.length > 100, 'the image data is empty');
   assert.ok(!asked.images[0].data.startsWith('data:'), 'the data: prefix was sent as payload');
+});
+
+// Storage is the expensive half: what is sent goes over the wire once, what is
+// kept sits in the browser for as long as the conversation does.
+await check('the picture kept in the log is smaller than the one that was sent', async () => {
+  const asked = await (await fetch(`${base}/__lastask`)).json();
+  const kept = await review.evalJs(`chrome.storage.local.get('tutorChatLog').then((r) => {
+    const withImages = (r.tutorChatLog || [])
+      .flatMap((c) => c.messages || [])
+      .filter((m) => m.images && m.images.length);
+    const url = withImages.length ? withImages[withImages.length - 1].images[0] : '';
+    // The payload only, so this compares like with like against what was sent.
+    return { head: url.slice(0, 30), length: url.length - url.indexOf(',') - 1 };
+  })`);
+  assert.match(kept.head, /^data:image\/(webp|jpeg);base64,/,
+    `the log kept "${kept.head}" — not a shrunk picture`);
+  const sent = asked.images[0].data.length;
+  // A thumbnail is 150px against the 1120px that was sent, so this is not a
+  // close-run thing: if it ever becomes one, the shrink stopped happening.
+  assert.ok(kept.length * 4 < sent,
+    `the thumbnail (${kept.length}) is not meaningfully smaller than what was sent (${sent})`);
 });
 
 // The bug this was reported as: the model said it could not see any image,

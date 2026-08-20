@@ -6,6 +6,17 @@
   <link rel="stylesheet" href="shell.css">
   <style>
     :root { --zx-measure: 700px; }
+    .review-heading { display: flex; align-items: baseline; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap; }
+    .review-heading .zx-title { margin-bottom: 6px; }
+    .setbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px;
+      color: var(--zx-muted); font-size: 12.5px; }
+    .setbar:empty { display: none; }
+    .setbar > span:first-child { flex: 1 1 280px; min-width: 0; }
+    .setbar a, .setbar button { padding: 4px 9px; border: 1px solid #ded6c7;
+      border-radius: 7px; background: #fffdf7; color: #7f1920; font: inherit;
+      font-weight: 650; text-decoration: none; white-space: nowrap; cursor: pointer; }
+    .setbar a:hover, .setbar button:hover { background: #f8f1e2; }
     .stats { color: var(--zx-muted); font-size: 13px; margin-bottom: 18px; }
     .stats b { color: #b5232b; }
     .progress { height: 5px; border-radius: 3px; background: #eceae2;
@@ -36,6 +47,10 @@
     .speak { --zx-speak: 32px; }
     .example .speak { --zx-speak: 25px; margin-left: 5px; }
     .defs { font-size: 16px; color: #333; max-width: 480px; margin: 0 auto; }
+    .library-add { align-self: center; margin-top: 2px; padding: 5px 11px; border-radius: 999px;
+      border: 1px solid #d8cab5; background: #fffdf7; color: #7f1920;
+      font-size: 12px; }
+    .library-add.on { border-color: #a8cfb1; background: #e8f7ec; color: #0a6b2a; }
     .example { margin-top: 14px; font-size: 15px; color: #444; }
     .example .zh { font-size: 18px;
       font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
@@ -84,29 +99,12 @@
     .summary-foot { margin: 20px 0 0; font-size: 12.5px; }
     .summary-foot a { color: #b5232b; font-weight: 600; text-decoration: none; }
     .summary-foot a:hover { text-decoration: underline; }
-    .pron { margin-top: 18px; padding-top: 14px; border-top: 1px dashed #e2e2e2; }
-    .pron-bar { display: flex; align-items: center; justify-content: center;
-      flex-wrap: wrap; gap: 6px 10px; }
-    .pron-btn { font-size: 13px; padding: 7px 14px; border-radius: 8px;
-      border: 1px solid #c9b8d6; background: #faf7fc; }
-    .pron-btn:hover:not(:disabled) { background: #f2ecf7; }
-    .pron-btn:disabled { opacity: 0.6; cursor: default; }
-    .pron-note { color: #aaa; font-size: 11px; }
-    .pron-status { min-height: 18px; margin-top: 10px; color: #777; font-size: 13px; }
-    .pron-hanzi { font-size: 34px; font-weight: 600; line-height: 1.35; margin-top: 6px;
-      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-        "Noto Sans CJK SC", sans-serif; }
-    .pron-char { border-radius: 5px; padding: 0 2px; }
-    .pron-good { color: #0a7a2f; background: #e6f6ea; }
-    .pron-tone { color: #a65b00; background: #fbeed6; }
-    .pron-miss { color: #c02626; background: #fbe4e4; }
-    .pron-summary { margin-top: 8px; font-size: 13px; color: #555; font-weight: 600; }
-    .pron-heard { margin-top: 3px; font-size: 12.5px; color: #999; }
   </style>
 </head>
 <body class="zx-app">
   <main class="zx-content">
-  <h2 class="zx-title">Review</h2>
+  <div class="review-heading"><h2 class="zx-title" id="reviewTitle">Review</h2></div>
+  <div class="setbar" id="setbar"></div>
   <div class="stats" id="stats"></div>
   <div id="app"></div>
   <div class="keyhint" id="keyhint" hidden>

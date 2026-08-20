@@ -1,9 +1,17 @@
-import { DEFAULT_SERVER_URL, getAiKey, getSyncMeta, newToken, pairUrl } from './lib/sync.js';
+import {
+  DEFAULT_SERVER_URL, getAiKey, getSyncMeta, newToken, pairUrl, pairWith,
+} from './lib/sync.js';
 import {
   AI_BAD_KEY, AI_NO_KEY, AI_NO_QUOTA, AI_NOTICES, AI_UNPAIRED,
   clearAiFailure, getAiStatus, onAiStatus,
 } from './lib/aistatus.js';
 import { DEFAULT_LIMITS } from './lib/srs.js';
+import {
+  joinList, labelFor, planRestore, readBackup, restoreOrder, summarizeBackup,
+} from './lib/backup.js';
+import {
+  downloadBackup, getBackupState, getIncludeSecrets, setIncludeSecrets,
+} from './lib/backupstate.js';
 import { mountShell } from './lib/shell.js';
 import { onHanziPref } from './lib/hanzi.js';
 import qrcode from './lib/qr.js';
@@ -54,6 +62,33 @@ function flashSaved() {
   savedTimer = setTimeout(() => savedEl.classList.remove('show'), 1200);
 }
 
+// Put a settings object on screen. Separate from load() because a restore
+// hands the page a whole new set of values while the voice list is already
+// built, and re-running load() would append that list to itself.
+function showSettings(s) {
+  els.theme.value = s.theme;
+  els.toneColors.checked = !!s.toneColors;
+  els.exampleCount.value = s.exampleCount;
+  els.examplePinyin.checked = !!s.examplePinyin;
+  els.hanziPref.value = s.hanziPref;
+  els.showHints.checked = !!s.showHints;
+  els.mandarinVoice.value = s.mandarinVoiceId;
+  // A voice chosen on another Mac, or one since removed from this one: the
+  // assignment above silently does nothing, leaving the dropdown showing a
+  // voice that is not the saved setting. Name it instead.
+  if (els.mandarinVoice.value !== s.mandarinVoiceId) {
+    const missing = document.createElement('option');
+    missing.value = s.mandarinVoiceId;
+    missing.textContent = 'Previously selected voice (unavailable)';
+    els.mandarinVoice.append(missing);
+    els.mandarinVoice.value = s.mandarinVoiceId;
+  }
+  els.voiceRate.value = s.voiceRate;
+  els.newPerDay.value = s.newPerDay;
+  els.maxPerDay.value = s.maxPerDay;
+  voiceRateValue.value = `${Number(s.voiceRate).toFixed(2)}×`;
+}
+
 async function load() {
   const [s, voiceResult] = await Promise.all([
     chrome.storage.sync.get(DEFAULTS),
@@ -70,23 +105,7 @@ async function load() {
     option.textContent = `${voice.voiceName} (${voice.lang})${voice.recommended ? ' — recommended' : ''}`;
     els.mandarinVoice.append(option);
   }
-  if (s.mandarinVoiceId !== 'auto' && !voices.some((v) => v.id === s.mandarinVoiceId)) {
-    const missing = document.createElement('option');
-    missing.value = s.mandarinVoiceId;
-    missing.textContent = 'Previously selected voice (unavailable)';
-    els.mandarinVoice.append(missing);
-  }
-  els.theme.value = s.theme;
-  els.toneColors.checked = !!s.toneColors;
-  els.exampleCount.value = s.exampleCount;
-  els.examplePinyin.checked = !!s.examplePinyin;
-  els.hanziPref.value = s.hanziPref;
-  els.showHints.checked = !!s.showHints;
-  els.mandarinVoice.value = s.mandarinVoiceId;
-  els.voiceRate.value = s.voiceRate;
-  els.newPerDay.value = s.newPerDay;
-  els.maxPerDay.value = s.maxPerDay;
-  voiceRateValue.value = `${Number(s.voiceRate).toFixed(2)}×`;
+  showSettings(s);
   if (voices.length === 0) {
     voiceNote.textContent = 'Chrome did not report an installed Mandarin voice. Add a Mandarin voice in macOS System Settings, then reload this page.';
   }
@@ -254,15 +273,12 @@ async function renderSync() {
 }
 
 syncEls.enable.addEventListener('click', async () => {
-  const serverUrl = syncEls.server.value.trim().replace(/\/+$/, '');
-  if (!/^https?:\/\/.+/.test(serverUrl)) {
+  // pairWith does the validating, so a URL typed here and one baked into a
+  // self-hosted build are accepted on exactly the same terms.
+  if (!await pairWith(syncEls.server.value)) {
     syncEls.server.focus();
     return;
   }
-  await chrome.storage.local.set({
-    syncMeta: { token: newToken(), serverUrl, cursor: 0, lastPushAt: 0 },
-  });
-  chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
   renderSync();
 });
 
@@ -294,6 +310,169 @@ syncEls.disable.addEventListener('click', async () => {
 });
 
 renderSync();
+
+// ---------------------------------------------------------------------------
+// Backup and restore
+//
+// The storage reads, the download, and the file picker. What belongs in a
+// backup and what a restore means to each kind of state is lib/backup.js.
+// ---------------------------------------------------------------------------
+
+const backupEls = {
+  freshness: document.getElementById('backupFreshness'),
+  usage: document.getElementById('backupUsage'),
+  secrets: document.getElementById('backupSecrets'),
+  download: document.getElementById('backupDownload'),
+  restore: document.getElementById('backupRestore'),
+  file: document.getElementById('backupFile'),
+  status: document.getElementById('backupStatus'),
+};
+
+function setBackupStatus(text, warn = false) {
+  backupEls.status.textContent = text;
+  backupEls.status.classList.toggle('warn', warn);
+}
+
+const fmtBytes = (n) => (n < 1024 * 1024
+  ? `${Math.max(1, Math.round(n / 1024))} KB`
+  : `${(n / (1024 * 1024)).toFixed(1)} MB`);
+
+// How much of this browser the app is using. The number the learner would want
+// before deciding whether any of this matters — and the size of the file the
+// button above is about to write.
+async function renderUsage() {
+  try {
+    const bytes = await chrome.storage.local.getBytesInUse(null);
+    backupEls.usage.textContent =
+      `This browser is holding ${fmtBytes(bytes)} of your learning, which is roughly `
+      + 'what the file will weigh.';
+  } catch {
+    // Not every context reports it; the section works fine without the number.
+    backupEls.usage.textContent = '';
+  }
+}
+
+// When the last file was written, and whether anything has happened since. The
+// navbar's button only appears once that gap is a week old; this line is the
+// same two facts said plainly, for someone who came here to check rather than
+// because they were asked to.
+async function renderFreshness() {
+  const { at, dirtySince } = await getBackupState();
+  const when = at ? new Date(at).toLocaleDateString(undefined, {
+    year: 'numeric', month: 'long', day: 'numeric',
+  }) : '';
+  backupEls.freshness.textContent = !at
+    ? 'None of this has ever been written to a file.'
+    : dirtySince
+      ? `Last backed up on ${when}. You have studied since, so this browser is `
+        + 'holding work that is not in that file.'
+      : `Last backed up on ${when}, and nothing has changed since — that file is `
+        + 'the whole of it.';
+  backupEls.freshness.classList.toggle('warn', !at);
+}
+
+async function renderBackupSection() {
+  backupEls.secrets.checked = await getIncludeSecrets();
+  await Promise.all([renderUsage(), renderFreshness()]);
+}
+
+// Remembered rather than re-asked, because the one-click button in the navbar
+// has no checkbox of its own and must not make the opposite choice silently.
+backupEls.secrets.addEventListener('change', () => {
+  setIncludeSecrets(backupEls.secrets.checked);
+  flashSaved();
+});
+
+// One write for the ordinary case, and a key-at-a-time retry when the browser
+// refuses it. A restore is the one moment the app writes everything at once, so
+// it is also the one moment a single oversized value can take the deck down
+// with it — see restoreOrder for what goes back first.
+async function writeArea(area, values) {
+  if (!Object.keys(values).length) return [];
+  try {
+    await chrome.storage[area].set(values);
+    return [];
+  } catch {
+    const skipped = [];
+    for (const key of restoreOrder(values)) {
+      try {
+        await chrome.storage[area].set({ [key]: values[key] });
+      } catch {
+        skipped.push(key);
+      }
+    }
+    return skipped;
+  }
+}
+
+// The writing itself is lib/backupstate.js, shared with the navbar's one-click
+// button — the checkbox above is the only thing this page adds, and it is read
+// here rather than from storage so that the box you are looking at is the one
+// that decides.
+backupEls.download.addEventListener('click', async () => {
+  const includeSecrets = backupEls.secrets.checked;
+  const { backup, bytes } = await downloadBackup({ includeSecrets });
+  setBackupStatus(`Saved ${summarizeBackup(backup)} — ${fmtBytes(bytes)}.`
+    + (includeSecrets ? '' : ' The API key and pairing code were left out, so restoring'
+      + ' this file will not change either.'));
+  renderFreshness();
+  flashSaved();
+});
+
+backupEls.restore.addEventListener('click', () => backupEls.file.click());
+
+backupEls.file.addEventListener('change', async () => {
+  const file = backupEls.file.files?.[0];
+  // Reset first: picking the same file twice in a row must re-run the restore.
+  backupEls.file.value = '';
+  if (!file) return;
+
+  let backup;
+  try {
+    backup = readBackup(await file.text());
+  } catch (err) {
+    setBackupStatus(err.message, true);
+    return;
+  }
+
+  const when = backup.createdAt
+    ? `backed up ${new Date(backup.createdAt).toLocaleString()}`
+    : 'from an unknown date';
+  if (!confirm(`Restore ${summarizeBackup(backup)}, ${when}?\n\n`
+    + 'Saved cards are merged with the ones on this computer, so nothing you have '
+    + 'saved or reviewed since is lost. Settings, news, placement results and tutor '
+    + 'conversations are replaced by the file.')) {
+    setBackupStatus('Restore cancelled — nothing was changed.');
+    return;
+  }
+
+  // Read the deck now rather than trusting anything from before the dialog: a
+  // sync or another tab may have changed it while the confirmation was up.
+  const current = await chrome.storage.local.get(['wordlist', 'tombstones']);
+  const plan = planRestore(backup, current, Date.now());
+  const skipped = [
+    ...await writeArea('sync', plan.sync),
+    ...await writeArea('local', plan.local),
+  ];
+  chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
+
+  showSettings(await chrome.storage.sync.get(DEFAULTS));
+  renderAiKey();
+  renderSync();
+  renderBackupSection();
+  // Counted from storage rather than from the plan: if something did not go in,
+  // the number has to be what is actually there.
+  const { wordlist = [] } = await chrome.storage.local.get('wordlist');
+  const restored = `Restored. Your library now has ${wordlist.length} `
+    + `card${wordlist.length === 1 ? '' : 's'}.`;
+  setBackupStatus(skipped.length
+    ? `${restored} This browser would not store ${joinList(skipped.map(labelFor))} — it is `
+      + 'out of room, so that much of the backup is still only in the file.'
+    : restored, skipped.length > 0);
+  flashSaved();
+});
+
+renderBackupSection();
 
 testVoice.addEventListener('click', async () => {
   const result = await chrome.runtime.sendMessage({

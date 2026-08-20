@@ -9,14 +9,28 @@ import { changedSince, applyRemote, capCards } from './merge.js';
 const MAX_WORDLIST = 5000;
 const MAX_TOMBSTONES = 5000;
 
-// The shared Worker this extension ships pointed at: it stores your cards and
-// serves the phone app, and costs its owner effectively nothing to run because
-// the expensive part — the model calls — is paid for by whoever makes them
-// (see getAiKey). Self-hosters change this one line to their own
-// `wrangler deploy` URL; anyone can override it per-install from the options
-// page, which is what dev does to reach `wrangler dev`. Stored in
-// syncMeta.serverUrl.
-export const DEFAULT_SERVER_URL = 'https://zhongwen-sync.siunami-matt.workers.dev';
+// The Worker this extension talks to for phone sync and the AI features —
+// deliberately empty, which means there isn't one until you deploy it.
+//
+// Everything that made this extension worth installing — the hover popup, the
+// dictionary, the example sentences, the HSK guides, saving words, flashcards
+// and review — runs entirely in this browser and never needed a server. What a
+// server adds is the phone app and the four model-backed features, and both of
+// those involve somebody's data leaving this machine.
+//
+// It used to ship pointed at a public deployment, which made pairing one click
+// and made whoever ran that deployment the custodian of every installer's deck
+// and the proxy for their API key. That is a fine arrangement between the
+// author and their own phone, and the wrong one to hand to strangers who
+// cannot see whose account is on the other end. So the default is nothing:
+// deploy `worker/` to your own Cloudflare account (see the README, about two
+// minutes) and paste the URL it prints into the options page. Then the only
+// server involved is yours.
+//
+// Self-hosters who would rather not paste it on every install can set it here
+// once and rebuild. Dev points it at `wrangler dev` from the options page.
+// Stored per-install in syncMeta.serverUrl.
+export const DEFAULT_SERVER_URL = '';
 
 export async function getSyncMeta() {
   const { syncMeta = null } = await chrome.storage.local.get('syncMeta');
@@ -63,6 +77,32 @@ export function newToken() {
     }
   }
   return out;
+}
+
+// Pair this install with a Worker, minting the capability token that names the
+// deck on it. Returns false when there is no URL to pair with — which is the
+// shipped state, since DEFAULT_SERVER_URL is empty until someone deploys one.
+//
+// Every surface that offers to turn on a server-backed feature goes through
+// here, so "what does Enable actually do" has one answer instead of four
+// slightly different ones. A false is not an error: it means the learner has
+// not deployed a Worker yet, and the caller should send them to the options
+// page, where the URL field and the setup steps are.
+export async function pairWith(serverUrl = DEFAULT_SERVER_URL) {
+  const url = String(serverUrl || '').trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/.+/.test(url)) return false;
+  await chrome.storage.local.set({
+    syncMeta: { token: newToken(), serverUrl: url, cursor: 0, lastPushAt: 0 },
+  });
+  chrome.runtime.sendMessage({ type: 'syncNow' }).catch(() => {});
+  return true;
+}
+
+// Is there a Worker to offer one-click pairing with? False in the shipped
+// build, true in a self-hosted one that set DEFAULT_SERVER_URL — which decides
+// whether a feature's empty state can say "Enable" or has to say "Set up".
+export function hasDefaultServer() {
+  return /^https?:\/\/.+/.test(String(DEFAULT_SERVER_URL || '').trim());
 }
 
 export function pairUrl(meta) {

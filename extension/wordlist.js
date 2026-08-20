@@ -11,6 +11,9 @@ import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
 import { forms, getHanziPref, onHanziPref, secondaryLabel } from './lib/hanzi.js';
+import {
+  applySharedProgress, sharedSrs, STUDY_PROGRESS_KEY,
+} from './lib/studysets.js';
 
 const { createSelectionBar } = globalThis.ZhongwenSaveCard;
 
@@ -76,8 +79,9 @@ const SORTS = {
 const savedAt = (w) => w.lastSavedAt || w.savedAt || 0;
 
 async function getWords() {
-  const { wordlist = [] } = await chrome.storage.local.get('wordlist');
-  return wordlist;
+  const { wordlist = [], [STUDY_PROGRESS_KEY]: progress = {} } =
+    await chrome.storage.local.get(['wordlist', STUDY_PROGRESS_KEY]);
+  return applySharedProgress(wordlist, progress);
 }
 
 function el(tag, className, text) {
@@ -465,9 +469,11 @@ function renderImportPreview(summary) {
 
 async function commitImport() {
   const now = Date.now();
+  const { [STUDY_PROGRESS_KEY]: progress = {} } =
+    await chrome.storage.local.get(STUDY_PROGRESS_KEY);
   const cards = pending.map((p) => ({
     ...p.card, savedAt: now, lastSavedAt: now, touches: 1, srs: null,
-  }));
+  })).map((card) => ({ ...card, srs: sharedSrs(card, progress) }));
   const count = cards.length;
   closeImport();
   if (!count) return;
@@ -576,7 +582,9 @@ document.getElementById('clear').addEventListener('click', async () => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.wordlist) render(changes.wordlist.newValue || []);
+  if (area === 'local' && (changes.wordlist || changes[STUDY_PROGRESS_KEY])) {
+    getWords().then(render);
+  }
 });
 
 // The whole table is headwords, so a flip repaints all of it — including the

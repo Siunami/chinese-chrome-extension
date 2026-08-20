@@ -8,12 +8,21 @@
 // has never heard of falls through to the Worker's catch-all 404. That
 // difference is the whole test.
 //
-// Usage: node scripts/worker-smoke.mjs [baseUrl]
-//   defaults to the DEFAULT_SERVER_URL the extension ships with.
+// Usage: node scripts/worker-smoke.mjs <baseUrl>
+//   e.g. node scripts/worker-smoke.mjs https://zhongwen-sync.you.workers.dev
+//
+// The URL is required. It used to default to the DEFAULT_SERVER_URL the
+// extension shipped with, but the extension no longer ships pointed at anyone's
+// deployment — there is no shared server to smoke-test, only yours.
 
 import { DEFAULT_SERVER_URL } from '../extension/lib/sync.js';
 
 const base = (process.argv[2] || DEFAULT_SERVER_URL).replace(/\/+$/, '');
+if (!/^https?:\/\/.+/.test(base)) {
+  console.error('usage: node scripts/worker-smoke.mjs <baseUrl>\n'
+    + '  the URL your `wrangler deploy` printed, e.g. https://zhongwen-sync.you.workers.dev');
+  process.exit(2);
+}
 
 // Every route the clients call, and how a deployed Worker should answer an
 // unauthenticated request to it. 404 always means "this deployment predates

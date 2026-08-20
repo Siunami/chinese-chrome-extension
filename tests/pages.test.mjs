@@ -169,10 +169,25 @@ test('review guards its keyboard shortcuts against typing', () => {
 test('the HSK page ships with the guide data it renders', () => {
   const hsk = read('hsk.js');
   assert.ok(hsk.includes("from './guides/index.js'"), 'hsk.js must import the guides');
+  assert.ok(hsk.includes("from './lib/hsk-vocab.js'"),
+    'hsk.js must load the complete standard vocabulary, not only the sampler');
+  assert.ok(hsk.includes('renderFullVocabulary'),
+    'hsk.js has no complete vocabulary-list surface');
   assert.ok(hsk.includes("type: 'pinyinBatch'"),
     'hsk.js must ask the service worker for readings rather than storing them');
   assert.ok(read('background.js').includes('pinyinBatch: handlePinyinBatch'),
     'background.js must answer pinyinBatch');
+});
+
+test('HSK and saved-library review use one shared schedule without sharing membership', () => {
+  const review = read('review.js');
+  const background = read('background.js');
+  assert.ok(review.includes("from './lib/studysets.js'"));
+  assert.ok(review.includes('recordSharedProgress'));
+  assert.ok(background.includes('studyProgress[key]'),
+    'adding an HSK-studied word to the library would reset its schedule');
+  assert.ok(!read('hsk.js').includes("type: 'saveWord'"),
+    'opening an HSK guide should not bulk-add the standard list to the library');
 });
 
 // Any Chinese anywhere in the app should open the popup. The exceptions are
@@ -203,6 +218,24 @@ test('every run of hanzi a page prints is hoverable', () => {
     assert.match(line, /lookup\.hoverable\(/,
       `${file}: ${what} (${marker}) is rendered as plain text, so it cannot be hovered`);
   }
+});
+
+// Both composers take Shift+Enter for a new line, and both used to print what
+// you wrote into a box with the browser's default white-space handling, which
+// throws every break away. What you typed and what the log shows have to match:
+// a question written as three lines is three lines when you read it back.
+test('line breaks typed into a composer survive into the log', () => {
+  const tutor = read('lib/tutor.js');
+  assert.match(tutor, /\.tutor \.msg\.user \.bubble \.text \{[^}]*white-space: pre-wrap/,
+    'lib/tutor.js: the question bubble collapses the line breaks you typed');
+  assert.match(tutor, /bubble\.append\(el\('div', 'text', msg\.content\)\)/,
+    'lib/tutor.js: the question text no longer carries the class that keeps its breaks');
+
+  const placement = read('placement.html');
+  assert.match(placement, /\.msg\.learner \.bubble \{[^}]*white-space: pre-wrap/,
+    'placement.html: the answer bubble collapses the line breaks you typed');
+  assert.ok(read('placement.js').includes('Shift+Enter for a new line'),
+    'placement.js no longer offers Shift+Enter — update this test');
 });
 
 console.log(`pages.test.mjs: ${passed} tests passed`);

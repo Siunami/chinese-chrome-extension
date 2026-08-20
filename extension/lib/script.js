@@ -17,7 +17,7 @@
 // The segmenter emits every character — unmatched ones as single-character
 // tokens — so punctuation, latin text and whitespace survive untouched.
 
-import { segment } from './cedict.js';
+import { rankEntryIndices, segment } from './cedict.js';
 
 export const TO_TRAD = 'trad';
 export const TO_SIMP = 'simp';
@@ -29,6 +29,15 @@ export const TO_SIMP = 'simp';
  * character; the rest (rare, and mostly variant spellings) are skipped. Where a
  * character maps several ways the most frequent wins, which is the closest a
  * table can get to being right without context.
+ *
+ * Staying the same is one of the ways a character maps, and by far the most
+ * common one — so it is counted like any other and wins ties. Counting only the
+ * pairs that differ meant a character that is almost always itself, but not
+ * quite always, came out of the table as its rare other form every single time:
+ * 家 is 家 in both scripts except in the two words spelled 傢俱 and 傢伙, and the
+ * table said 家 → 傢, so a guide about 我的家 was converted to 我的傢. A character
+ * only earns a row here when some other form genuinely beats leaving it alone,
+ * which also keeps the table to the characters that need one.
  */
 export function buildScriptMap(entries) {
   const tally = { toTrad: new Map(), toSimp: new Map() };
@@ -43,7 +52,6 @@ export function buildScriptMap(entries) {
     const trad = Array.from(entry.trad || '');
     if (!simp.length || simp.length !== trad.length) continue;
     for (let i = 0; i < simp.length; i++) {
-      if (simp[i] === trad[i]) continue;
       bump(tally.toTrad, simp[i], trad[i]);
       bump(tally.toSimp, trad[i], simp[i]);
     }
@@ -53,9 +61,14 @@ export function buildScriptMap(entries) {
     const out = new Map();
     for (const [from, counts] of table) {
       let best = null;
-      let bestN = -1;
-      for (const [to, n] of counts) if (n > bestN) { best = to; bestN = n; }
-      out.set(from, best);
+      // The bar to clear is how often this character is simply itself; a
+      // character with no row is left alone by convertText, which is the same
+      // answer with none of the table.
+      let bestN = counts.get(from) || 0;
+      for (const [to, n] of counts) {
+        if (to !== from && n > bestN) { best = to; bestN = n; }
+      }
+      if (best) out.set(from, best);
     }
     return out;
   };
@@ -82,12 +95,19 @@ export function convertText(map, entries, scriptMap, text, to) {
       // script we are converting *from* or the one we are converting *to*.
       // Prefer the entry whose source-side form is literally this token: that
       // is the sense the text actually used, and the one whose pair is right.
+      //
+      // Several entries can share that form and still disagree about the other
+      // script, so take them in the order the popup would show them rather than
+      // the order the file lists them in. CEDICT puts 傢 家 ("used in 傢伙 and
+      // 傢俱") above 家 家 ("home; family"), and first-in-the-file meant every
+      // 家 in a converted guide became 傢.
       const from = wantTrad ? 'simp' : 'trad';
+      const ranked = idxs.length > 1 ? rankEntryIndices(idxs, entries) : idxs;
       let entry = null;
-      for (const i of idxs) {
+      for (const i of ranked) {
         if (entries[i][from] === token.text) { entry = entries[i]; break; }
       }
-      out += (entry || entries[idxs[0]])[wantTrad ? 'trad' : 'simp'];
+      out += (entry || entries[ranked[0]])[wantTrad ? 'trad' : 'simp'];
       continue;
     }
     for (const ch of token.text) out += chars.get(ch) || ch;

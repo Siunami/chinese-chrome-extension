@@ -108,7 +108,6 @@ const handlers = {
   }),
   // saveWord/unsaveWord/savedStates are answered in the page instead: they
   // operate on the word list, which lives in the shim's fake storage.
-  pinyinChars: () => ({ chars: [] }),
   listVoices: () => ({ voices: [] }),
   getEnabled: () => ({ enabled: true }),
   syncNow: () => ({ ok: true }),
@@ -151,9 +150,11 @@ function placementTurn(body) {
     comprehension: held ? 3 : 0,
     production: held ? 3 : 0,
     // One correction per marked turn, so the report has something to save.
+    // The correction is a word that is spelled differently in the two scripts
+    // (高兴 / 高興), so the report has something whose script can be checked.
     errors: held ? [] : [{
-      span: '我是很好',
-      correction: '我很好',
+      span: '我是很高兴',
+      correction: '我很高兴',
       note: 'No 是 before an adjective.',
     }],
     vocabUsed: [],
@@ -164,6 +165,9 @@ function placementTurn(body) {
     // does once it has marked the answer above.
     level: (body.allowed || [body.target]).includes(body.target)
       ? body.target : (body.allowed || [body.target])[0],
+    // Always simplified, whatever `script` the turn asked for — a real model
+    // sometimes ignores it too, and the page converting anyway is the property
+    // the traditional check is about.
     reply: body.finish ? '今天就到这里，谢谢你！' : '你今天做了什么？',
     taskType: body.finish ? 'wind-down' : 'question',
     assess,
@@ -302,6 +306,14 @@ const CHROME_SHIM = `
         notify(name, changes);
         return Promise.resolve();
       },
+      // Chrome measures the key plus its JSON value; close enough that the
+      // page's "holding 2.3 MB" line is exercised rather than skipped.
+      getBytesInUse(keys) {
+        const bag = store[name];
+        const names = keys == null ? Object.keys(bag) : [].concat(keys);
+        return Promise.resolve(names.reduce(
+          (n, k) => n + (k in bag ? k.length + JSON.stringify(bag[k]).length : 0), 0));
+      },
       remove(keys) {
         const changes = {};
         for (const k of [].concat(keys)) {
@@ -323,9 +335,15 @@ const CHROME_SHIM = `
       saveWord: (msg) => {
         const e = msg.entry || {};
         if (!e.simp) return { ok: false };
-        const list = (store.local.wordlist || []).filter((w) => cardKey(w) !== cardKey(e));
+        const key = cardKey(e);
+        const old = (store.local.wordlist || []).find((w) => cardKey(w) === key);
+        const shared = (store.local.studyProgress || {})[key];
+        const srs = [old?.srs, shared].filter(Boolean).sort(
+          (a, b) => (b.reviewedAt || 0) - (a.reviewedAt || 0),
+        )[0] || null;
+        const list = (store.local.wordlist || []).filter((w) => cardKey(w) !== key);
         list.unshift({ ...e, cardType: e.cardType || 'word', savedAt: Date.now(),
-          lastSavedAt: Date.now(), touches: 1, srs: null });
+          lastSavedAt: Date.now(), touches: (old?.touches || 0) + 1, srs });
         store.local.wordlist = list;
         persist();
         return { ok: true, count: list.length };
@@ -365,6 +383,7 @@ const CHROME_SHIM = `
             method: 'POST', body: JSON.stringify(msg),
           }).then((r) => r.json())),
         openOptionsPage: () => {},
+        getManifest: () => (${readFileSync(join(extDir, 'manifest.json'), 'utf8')}),
       },
       storage: {
         local: area('local'),

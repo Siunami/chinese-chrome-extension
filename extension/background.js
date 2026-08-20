@@ -2,8 +2,7 @@
 
 import {
   parseDictTSV, buildIndex, buildRelatedIndex, findRelated, lookupAt,
-  charBreakdown, rankEntryIndices, parsePinyin, findExamples, charReadings,
-  sentencePinyin,
+  charBreakdown, rankEntryIndices, parsePinyin, findExamples, sentencePinyin,
 } from './lib/cedict.js';
 import {
   pickMandarinVoice, sortedMandarinVoices, voiceId,
@@ -14,6 +13,8 @@ import { translateGlossed, isPermanent } from './lib/translate.js';
 import { cardKey, tombstoneFor } from './lib/merge.js';
 import { getAiKey, getSyncMeta, syncNow } from './lib/sync.js';
 import { postAi } from './lib/aistatus.js';
+import { noteStorageChange } from './lib/backupstate.js';
+import { latestSrs, STUDY_PROGRESS_KEY } from './lib/studysets.js';
 
 // ---------------------------------------------------------------------------
 // Data loading (lazy; the worker may be restarted at any time)
@@ -113,6 +114,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  // How long there has been work in this browser that is not in any file. The
+  // service worker is the only place that sees every write — a card saved from
+  // the page you are reading is written here, not by any extension page that
+  // could have noticed — so this is where the clock behind the navbar's backup
+  // button starts. lib/backupstate.js ignores the keys that move on their own.
+  noteStorageChange(changes, area);
+
   if (area !== 'local') return;
   // syncMeta changes are sync's own bookkeeping; reacting to them would loop.
   if (!changes.wordlist && !changes.tombstones) return;
@@ -229,7 +237,8 @@ async function handleSaveWord(msg) {
   if (!simp) return { ok: false };
   const trad = String(e.trad || '');
   const now = Date.now();
-  const { wordlist = [] } = await chrome.storage.local.get('wordlist');
+  const { wordlist = [], [STUDY_PROGRESS_KEY]: studyProgress = {} } =
+    await chrome.storage.local.get(['wordlist', STUDY_PROGRESS_KEY]);
   const key = keyForEntry(e);
   const idx = wordlist.findIndex((w) => cardKey(w) === key);
   let word;
@@ -258,6 +267,10 @@ async function handleSaveWord(msg) {
       sourceWord: String(e.sourceWord || ''),
     };
   }
+  // Joining the saved library is membership, not a reset. If this word has
+  // already been studied through an HSK set, carry that one shared schedule
+  // into the new library row.
+  word.srs = latestSrs(word.srs, studyProgress[key]);
   if (e.glossed) word.glossed = true;
   wordlist.unshift(word);
   await chrome.storage.local.set({ wordlist: wordlist.slice(0, MAX_WORDLIST) });
@@ -445,15 +458,6 @@ async function handleListVoices() {
   };
 }
 
-// Per-character pinyin for the review page's pronunciation self-test, so it
-// can compare the expected reading against what the recognizer heard.
-async function handlePinyinChars(msg) {
-  const text = String(msg.text || '').slice(0, 200);
-  if (!text) return { chars: [] };
-  const { entries, index } = await ensureData();
-  return { chars: charReadings(index, entries, text) };
-}
-
 // Pinyin for a batch of Chinese strings, annotated the same way the bundled
 // example corpus is. The HSK guides store no readings of their own — they ask
 // for them here — so the guide text and the hover popup can never disagree.
@@ -503,7 +507,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     resolveCards: handleResolveCards,
     examples: handleExamples,
     speak: handleSpeak,
-    pinyinChars: handlePinyinChars,
     pinyinBatch: handlePinyinBatch,
     convertScript: handleConvertScript,
     listVoices: handleListVoices,

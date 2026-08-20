@@ -122,6 +122,28 @@ const CSS = `
 .lad-row[data-verdict="sustained"] .lad-verdict,
 .lad-row[data-verdict="struggled"] .lad-verdict { color: var(--viz-ink); }
 .lad-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 9px; }
+
+/* Placement trend: one column per sitting, oldest on the left, on a fixed
+   0-9 scale for the same reason the ladder's rows are fixed — the question is
+   "did HSK 3 become HSK 4", and a chart rescaled to the learner's own best
+   result draws every history as a triumph ending at the top of the box. */
+.tr-plot { display: flex; align-items: flex-end; gap: 4px; height: 96px;
+  border-bottom: 1px solid var(--viz-line); }
+.tr-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+  justify-content: flex-end; height: 100%; background: none; border: 0;
+  padding: 0; cursor: pointer; }
+.tr-bar { background: var(--viz-series); border-radius: 4px 4px 0 0; min-height: 2px;
+  transition: filter 0.1s; }
+.tr-col[data-latest="1"] .tr-bar { background: var(--viz-accent); }
+.tr-col[data-zero="1"] .tr-bar { background: var(--viz-track); }
+.tr-col:hover .tr-bar, .tr-col:focus-visible .tr-bar { filter: brightness(1.15); }
+.tr-col:focus-visible { outline: 2px solid var(--viz-accent); outline-offset: 1px; }
+.tr-value { font-size: 10px; line-height: 1.2; text-align: center;
+  color: var(--viz-ink); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+.tr-axis { display: flex; gap: 4px; margin-top: 5px; }
+.tr-tick { flex: 1 1 0; min-width: 0; text-align: center; font-size: 10px;
+  color: var(--viz-muted); white-space: nowrap; overflow: hidden; }
+.tr-tick[data-latest="1"] { color: var(--viz-accent); font-weight: 700; }
 `;
 
 let cssInjected = false;
@@ -385,6 +407,90 @@ export function levelLadder(perLevel, { here = 0, title = 'What the interview fo
   }
   details.append(table);
   root.append(details);
+  return root;
+}
+
+// ---------------------------------------------------------------------------
+// Level trend: every placement interview ever sat, in the order they were sat
+// ---------------------------------------------------------------------------
+
+// Columns per sitting the chart will draw before it starts leaving the oldest
+// out. Past this each column is thinner than the level number over it; the
+// table underneath still lists every sitting, and the chart says so.
+export const TREND_COLUMNS = 24;
+
+// The scale the columns are drawn against — the whole HSK ladder, always.
+const MAX_TREND_LEVEL = 9;
+
+const shortDate = (ts) => new Date(ts).toLocaleDateString(undefined,
+  { month: 'short', day: 'numeric' });
+const fullDate = (ts) => new Date(ts).toLocaleDateString(undefined,
+  { year: 'numeric', month: 'short', day: 'numeric' });
+
+// `points` is progression().points from lib/placement.js — one entry per
+// sitting, oldest first, `level` 0 for a run that held nothing. `onPick` makes
+// the columns open that sitting's report; without it they are still hoverable
+// but inert.
+export function levelTrend(points, { onPick = null, title = 'Your placements over time' } = {}) {
+  ensureCss();
+  const root = el('div', 'viz trend-box');
+  if (title) root.append(el('p', 'viz-title', title));
+
+  const shown = points.slice(-TREND_COLUMNS);
+  const hidden = points.length - shown.length;
+  root.append(el('p', 'viz-sub',
+    `Each interview you have sat, oldest first, on the full HSK scale.${
+      onPick ? ' Pick one to read its report.' : ''}`));
+
+  const plot = el('div', 'tr-plot');
+  const axis = el('div', 'tr-axis');
+  const readout = el('div', 'viz-readout');
+  const best = shown.reduce((top, p) => Math.max(top, p.level), 0);
+
+  shown.forEach((point, i) => {
+    const latest = i === shown.length - 1;
+    const col = el(onPick ? 'button' : 'div', 'tr-col');
+    if (onPick) col.type = 'button';
+    if (latest) col.dataset.latest = '1';
+    if (!point.level) col.dataset.zero = '1';
+    const label = `${fullDate(point.at)}: `
+      + `${point.level ? `HSK ${point.level}` : 'below HSK 1'}`
+      + `, ${plural(point.turns, 'question')}, ${point.confidence} confidence`
+      + (point.detailed ? '' : ' (transcript no longer kept)');
+    col.title = label;
+    col.setAttribute('aria-label', label);
+
+    // The ends of the line and its high point carry their number; the rest
+    // would be a row of digits saying what the bar heights already say.
+    const showValue = latest || i === 0 || (point.level === best && point.level > 0);
+    if (showValue) {
+      col.append(el('div', 'tr-value', point.level ? String(point.level) : '–'));
+    }
+    const bar = el('div', 'tr-bar');
+    // A sitting that held nothing still gets a visible stub: no column at all
+    // reads as "did not sit it", which is the opposite of what happened.
+    bar.style.height = `${Math.max(2, (point.level / MAX_TREND_LEVEL) * (showValue ? 82 : 100))}%`;
+    col.append(bar);
+    const describe = () => { readout.replaceChildren(el('b', '', label)); };
+    col.addEventListener('mouseenter', describe);
+    col.addEventListener('focus', describe);
+    col.addEventListener('mouseleave', () => readout.replaceChildren());
+    col.addEventListener('blur', () => readout.replaceChildren());
+    if (onPick) col.addEventListener('click', () => onPick(point));
+    plot.append(col);
+
+    // At two dozen columns there is room for roughly every fourth date.
+    const labelled = latest || i === 0 || i % 4 === 0;
+    const tick = el('div', 'tr-tick', labelled ? shortDate(point.at) : '');
+    if (latest) tick.dataset.latest = '1';
+    axis.append(tick);
+  });
+
+  root.append(plot, axis, readout);
+  if (hidden > 0) {
+    root.append(el('div', 'fc-note',
+      `Showing the last ${TREND_COLUMNS} of ${points.length} sittings — the table below has them all.`));
+  }
   return root;
 }
 

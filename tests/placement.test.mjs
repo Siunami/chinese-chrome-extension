@@ -16,7 +16,9 @@ import worker from '../worker/src/index.js';
 import { fakeDb, stubModel } from './fake-d1.mjs';
 import {
   MAX_TURNS, MIN_TURNS, MAX_PROBES_PER_LEVEL, SUSTAIN, FLOOR,
+  MAX_FULL_RESULTS, MAX_RESULTS, MODEL_HISTORY_LIMIT,
   turnScore, verdictOf, estimate, planNext, rubricFor,
+  trimResults, summarizeResult, progression, placementDigest,
 } from '../extension/lib/placement.js';
 
 let passed = 0;
@@ -217,6 +219,111 @@ await test('unmarked turns are not counted as zeros', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The kept history
+//
+// The interview can be sat as often as the learner likes, and the pile of
+// sittings is the only thing in the app that measures rather than counts. What
+// is bounded is the bulk of an old sitting, never the fact that it happened.
+// ---------------------------------------------------------------------------
+
+// A stored result, as complete() writes one.
+const sitting = (at, level, over = {}) => ({
+  at,
+  level,
+  confidence: 'high',
+  studyLevel: level + 1,
+  perLevel: [],
+  turns: 12,
+  comprehension: 2.4,
+  production: 2.1,
+  report: { summary: `Held ${level}.`, strengths: ['tones'], gaps: ['了'], advice: ['read more'] },
+  transcript: [{ level, prompt: '你好吗？', answer: '很好。', assess: { comprehension: 3, production: 3 } }],
+  ...over,
+});
+
+await test('a new sitting goes on the front, and nothing already there is dropped', () => {
+  // Newest first, which is the order the key is stored in.
+  const before = Array.from({ length: 40 }, (_, i) => sitting(1039 - i, 3));
+  const after = trimResults([sitting(9999, 4), ...before]);
+  assert.equal(after.length, 41);
+  assert.equal(after[0].at, 9999);
+  assert.equal(after[after.length - 1].at, 1000, 'the oldest sitting was lost');
+});
+
+await test('older sittings keep their numbers and lose their bulk', () => {
+  const results = trimResults(
+    Array.from({ length: MAX_FULL_RESULTS + 5 }, (_, i) => sitting(9000 - i, 3)),
+  );
+  const recent = results[MAX_FULL_RESULTS - 1];
+  assert.ok(recent.transcript, 'a recent sitting lost its transcript');
+  assert.ok(recent.report, 'a recent sitting lost its report');
+
+  const old = results[MAX_FULL_RESULTS];
+  assert.equal(old.transcript, undefined);
+  assert.equal(old.report, undefined);
+  // The numbers the history, the chart and the tutor read all survive.
+  assert.equal(old.level, 3);
+  assert.equal(old.turns, 12);
+  assert.equal(old.confidence, 'high');
+  assert.equal(old.comprehension, 2.4);
+  assert.equal(old.summary, 'Held 3.', 'the examiner\'s one line was not kept');
+});
+
+await test('trimming a history that has already been trimmed changes nothing', () => {
+  const once = trimResults(Array.from({ length: MAX_FULL_RESULTS + 3 }, (_, i) => sitting(9000 - i, 3)));
+  assert.deepEqual(trimResults(once), once);
+});
+
+await test('the row count has a backstop, and it is the oldest that goes', () => {
+  const results = trimResults(Array.from({ length: MAX_RESULTS + 10 }, (_, i) => sitting(9000 - i, 3)));
+  assert.equal(results.length, MAX_RESULTS);
+  assert.equal(results[0].at, 9000, 'the newest sitting was dropped');
+});
+
+await test('the progression reads oldest first, and says what moved', () => {
+  const trail = progression([sitting(3000, 4), sitting(2000, 3), sitting(1000, 2)]);
+  assert.deepEqual(trail.points.map((p) => p.level), [2, 3, 4]);
+  assert.equal(trail.first.at, 1000);
+  assert.equal(trail.latest.at, 3000);
+  assert.equal(trail.sittings, 3);
+  assert.equal(trail.best, 4);
+  assert.equal(trail.change, 2);
+});
+
+await test('a single sitting has a level but no movement to report', () => {
+  const trail = progression([sitting(1000, 3)]);
+  assert.equal(trail.change, null, 'one sitting cannot be a trend');
+  assert.equal(trail.best, 3);
+});
+
+await test('a run that held nothing stays in the line as a zero', () => {
+  // Dropping these would draw a flattering line through the early months,
+  // when "sat it, held nothing" is most of what happened.
+  const trail = progression([sitting(2000, 2), sitting(1000, 0)]);
+  assert.deepEqual(trail.points.map((p) => p.level), [0, 2]);
+  assert.equal(trail.change, 2);
+});
+
+await test('the tutor is told the whole line, oldest first and capped', () => {
+  const many = Array.from({ length: MODEL_HISTORY_LIMIT + 6 }, (_, i) => sitting(9000 - i * 100, 4));
+  const digest = placementDigest(many);
+  assert.equal(digest.level, 4);
+  assert.equal(digest.summary, 'Held 4.');
+  assert.equal(digest.history.length, MODEL_HISTORY_LIMIT);
+  // Oldest first within the window, and the window is the recent end of it.
+  assert.ok(digest.history[0].at < digest.history[digest.history.length - 1].at);
+  assert.equal(digest.history[digest.history.length - 1].at, 9000);
+  assert.equal(placementDigest([]), null);
+});
+
+await test('a sitting whose transcript is gone still reaches the tutor', () => {
+  const digest = placementDigest([summarizeResult(sitting(2000, 5)), sitting(1000, 4)]);
+  assert.equal(digest.level, 5);
+  assert.equal(digest.summary, 'Held 5.', 'the summary did not survive the trim');
+  assert.equal(digest.history.length, 2);
+});
+
+// ---------------------------------------------------------------------------
 // The rubric the model marks against
 // ---------------------------------------------------------------------------
 
@@ -314,6 +421,45 @@ await test('the learner\'s answer reaches the model marked as the thing to grade
     assert.match(prompt, /mark this one/);
     assert.match(prompt, /我喜欢看书。/);
     assert.match(prompt, /aimed at HSK 3\. Mark it against THAT level/);
+  } finally {
+    stub.restore();
+  }
+});
+
+// A traditional reader who wrote 博物館 was told the correct character for
+// "museum" is 馆 — a correction that is not one, and that goes into their deck
+// in the script they do not read. The examiner cannot know which way the app's
+// 简/繁 toggle is set unless the turn says so, so the turn says so.
+await test('the learner\'s script travels, so traditional is not marked as an error', async () => {
+  const stub = stubModel(REPLY);
+  try {
+    await worker.fetch(post({
+      target: 3,
+      script: 'trad',
+      answer: '我去了博物館。',
+      history: [{ role: 'examiner', content: '你昨天做了什麼？' }],
+    }, auth), { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    const prompt = stub.seen[0].input;
+    assert.match(prompt, /TRADITIONAL/);
+    assert.match(prompt, /never list one as an error/);
+    assert.doesNotMatch(prompt, /reads and writes SIMPLIFIED/);
+
+    // And the standing rule is in the system prompt, so it holds for a turn
+    // whose own line is somehow missing.
+    assert.match(stub.seen[0].instructions, /博物館 is not a misspelling of 博物馆/);
+  } finally {
+    stub.restore();
+  }
+});
+
+await test('a turn with no script named is a simplified one', async () => {
+  const stub = stubModel(REPLY);
+  try {
+    await worker.fetch(post({ target: 3, history: [] }, auth),
+      { DB: fakeDb(), OPENAI_API_KEY: 'k' });
+    const prompt = stub.seen[0].input;
+    assert.match(prompt, /reads and writes SIMPLIFIED/);
+    assert.doesNotMatch(prompt, /TRADITIONAL/);
   } finally {
     stub.restore();
   }

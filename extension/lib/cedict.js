@@ -572,35 +572,6 @@ export function sentencePinyin(map, entries, zh) {
   return s;
 }
 
-// Per-character readings for arbitrary text, aligned one entry per code point.
-// Chinese characters get their segmentation-derived syllable + tone; every
-// other code point (punctuation, latin, digits) passes through with an empty
-// syllable. Used by the pronunciation self-test to line hanzi up with the
-// syllables a speech recognizer heard.
-export function charReadings(map, entries, zh) {
-  const tokens = segment(map, entries, zh);
-  const out = [];
-  let prevText = '';
-  for (const t of tokens) {
-    const chars = Array.from(t.text);
-    if (t.idxs) {
-      const reading =
-        contextualReading(prevText, t.text) || pickReading(t.text, t.idxs, entries);
-      const syls = reading ? parsePinyin(reading) : [];
-      if (syls.length === chars.length) {
-        chars.forEach((ch, i) => out.push({
-          char: ch, syllable: syls[i].text, tone: syls[i].tone,
-        }));
-        prevText = t.text;
-        continue;
-      }
-    }
-    for (const ch of chars) out.push({ char: ch, syllable: '', tone: 0 });
-    prevText = t.text;
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 // Example sentences
 // ---------------------------------------------------------------------------

@@ -216,6 +216,38 @@ body.embedded .zx-header { display: none; }
 }
 .zx-notice:focus-visible { outline: 2px solid var(--zx-red); outline-offset: 2px; }
 
+/* The backup nudge. Deliberately not the notice's amber: nothing is wrong, and
+   an install that has simply been studied in for a week should not wear the
+   same colour as one whose API key was refused. It is a quiet outline until you
+   reach for it, and it turns green for the three seconds after it worked —
+   which is the only confirmation there is, the file itself having gone
+   somewhere the page cannot see. */
+.zx-backup {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 11px; border: 1px solid var(--zx-line); border-radius: 999px;
+  background: var(--zx-surface); color: var(--zx-muted); font: inherit;
+  font-size: 12.5px; font-weight: 650; cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.zx-backup[hidden] { display: none; }
+.zx-backup svg {
+  flex: none; fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.zx-app .zx-backup:hover, .zx-backup:hover {
+  border-color: var(--zx-red); background: var(--zx-hover); color: var(--zx-red);
+}
+.zx-backup:focus-visible { outline: 2px solid var(--zx-red); outline-offset: 2px; }
+.zx-backup:disabled { cursor: default; opacity: 0.65; }
+.zx-app .zx-backup.done, .zx-backup.done,
+.zx-app .zx-backup.done:hover, .zx-backup.done:hover {
+  border-color: #a8c9a2; background: #eff6ed; color: #2f6b31;
+}
+.zx-app .zx-backup.failed, .zx-backup.failed,
+.zx-app .zx-backup.failed:hover, .zx-backup.failed:hover {
+  border-color: #e0a9a9; background: #fbefef; color: var(--zx-red-deep);
+}
+
 .zx-settings {
   padding: 6px 10px; border: 1px solid transparent; border-radius: 8px;
   background: none; color: var(--zx-muted); font: inherit; font-size: 12px;
@@ -240,6 +272,10 @@ body.embedded .zx-header { display: none; }
      to deal with", and it keeps its title and aria-label either way. */
   .zx-notice { padding: 6px 8px; }
   .zx-notice span { display: none; }
+  /* And the backup button: the tray-and-arrow is the same glyph the browser
+     puts on its own download control, so it survives losing the word. */
+  .zx-backup { padding: 6px 8px; }
+  .zx-backup span { display: none; }
 }
 
 /* --- page frame ---------------------------------------------------------- */

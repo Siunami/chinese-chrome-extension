@@ -250,18 +250,109 @@ export function rubricFor(level) {
 // Stored results
 // ---------------------------------------------------------------------------
 
+// The interview can be sat as often as you like, and every sitting is kept.
+// One placement is a number; a pile of them is the only evidence you have that
+// six months of study moved anything, and it is evidence that cannot be
+// reconstructed later — a history that quietly dropped its oldest rows would
+// erase exactly the end of the line you most want to look back at.
+//
+// So what is bounded here is bulk, not count. A sitting's transcript and the
+// examiner's written report are nearly all of its bytes and are re-readable
+// prose about one afternoon; the numbers are what the chart, the table and the
+// tutor read. Recent runs keep everything, older ones keep the numbers and the
+// examiner's one-line summary.
+
 export const RESULTS_KEY = 'placementResults';
-export const MAX_RESULTS = 20;
+// Sittings that keep their transcript and full report. Retaking it monthly,
+// that is roughly the last two years in full.
+export const MAX_FULL_RESULTS = 20;
+// A hard stop on rows, so a bored afternoon or a stuck loop cannot grow this
+// key without limit. A summary row is a few hundred bytes, so this is years of
+// sittings either way — and it is a backstop, not the working ceiling.
+export const MAX_RESULTS = 500;
+
+// A result with the bulk taken out: every number the history reads from, plus
+// whatever the examiner said in one line. Idempotent, because trimming runs
+// over rows that have already been through it.
+export function summarizeResult(result) {
+  if (!result) return result;
+  const { transcript, report, ...rest } = result;
+  const summary = (typeof report?.summary === 'string' && report.summary)
+    || (typeof rest.summary === 'string' && rest.summary)
+    || '';
+  return summary ? { ...rest, summary } : rest;
+}
+
+// Newest first, which is the order the history reads in.
+export function trimResults(results) {
+  return results
+    .slice(0, MAX_RESULTS)
+    .map((result, i) => (i < MAX_FULL_RESULTS ? result : summarizeResult(result)));
+}
 
 export async function loadResults() {
   const { [RESULTS_KEY]: results } = await chrome.storage.local.get(RESULTS_KEY);
   return Array.isArray(results) ? results : [];
 }
 
-// Newest first, which is the order the history reads in.
 export async function saveResult(result) {
-  const results = await loadResults();
-  results.unshift(result);
-  await chrome.storage.local.set({ [RESULTS_KEY]: results.slice(0, MAX_RESULTS) });
+  const results = trimResults([result, ...await loadResults()]);
+  await chrome.storage.local.set({ [RESULTS_KEY]: results });
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// The line the sittings draw
+// ---------------------------------------------------------------------------
+
+// Oldest first — a progress chart reads left to right — with the arithmetic
+// nobody should be doing in their head: where you started, where you are, and
+// whether the gap between them is movement or noise.
+//
+// A run that ended below HSK 1 is level 0 and stays in: "sat it, held nothing"
+// is a real reading, and dropping those rows would draw a flattering line
+// through the early months when they are most of what happened.
+export function progression(results) {
+  const points = (Array.isArray(results) ? results : [])
+    .filter((r) => r && Number.isFinite(Number(r.at)))
+    .map((r) => ({
+      at: Number(r.at),
+      level: Math.max(0, Math.min(MAX_LEVEL, Math.round(Number(r.level) || 0))),
+      confidence: r.confidence || 'low',
+      turns: Number(r.turns) || 0,
+      detailed: Array.isArray(r.transcript) && r.transcript.length > 0,
+    }))
+    .sort((a, b) => a.at - b.at);
+  const first = points[0] || null;
+  const latest = points[points.length - 1] || null;
+  return {
+    points,
+    first,
+    latest,
+    sittings: points.length,
+    best: points.reduce((top, p) => Math.max(top, p.level), 0),
+    // Only meaningful once there is something to compare against.
+    change: points.length > 1 ? latest.level - first.level : null,
+  };
+}
+
+// What the tutor tells the Worker about where this learner has been. Small on
+// purpose: the levels and their dates, so an answer can say "you were HSK 3 in
+// March" without the whole transcript of March going into a prompt.
+export const MODEL_HISTORY_LIMIT = 10;
+
+export function placementDigest(results) {
+  const list = Array.isArray(results) ? results.filter(Boolean) : [];
+  const [latest] = list;
+  if (!latest || !Number.isInteger(latest.level)) return null;
+  const { points } = progression(list);
+  return {
+    level: latest.level,
+    at: latest.at || null,
+    summary: latest.report?.summary || latest.summary || '',
+    // Oldest first, most recent kept when there are more than fit.
+    history: points
+      .slice(-MODEL_HISTORY_LIMIT)
+      .map((p) => ({ level: p.level, at: p.at, confidence: p.confidence })),
+  };
 }

@@ -13,7 +13,13 @@ import { splitSentences } from './lib/cards.js';
 import { createLookup } from './lib/lookup.js';
 import { createTutor } from './lib/tutor.js';
 import { mountShell } from './lib/shell.js';
-import { convertDeep, getHanziPref, onHanziPref } from './lib/hanzi.js';
+import {
+  convertDeep, forms, getHanziPref, isTradFirst, onHanziPref,
+} from './lib/hanzi.js';
+import {
+  HSK_LEVEL_COUNTS, cumulativeHskCount, hskLevelKey, hskPracticeHref,
+  loadHskVocabulary, searchableHskText, vocabularyForLevel,
+} from './lib/hsk-vocab.js';
 
 const { saver, createSelectionBar } = globalThis.ZhongwenSaveCard;
 
@@ -62,12 +68,31 @@ let readings = new Map();    // Chinese string -> pinyin, per guide
 let showPassagePinyin = false;
 let showPassageEnglish = false;
 let renderSeq = 0;           // guards async renders against fast level switching
+let hskVocabulary = [];      // the complete 11,092-row standard list
+let hskVocabularyError = '';
+let vocabScope = 'level';
+let vocabQuery = '';
+let vocabPage = 0;
+
+const VOCAB_PAGE_SIZE = 100;
+const HAS_CHINESE = /[\u3400-\u9fff\uf900-\ufaff]/;
+const embedded = new URLSearchParams(location.search).has('embedded');
 
 function el(tag, className, text) {
   const e = document.createElement(tag);
   if (className) e.className = className;
   if (text !== undefined) e.textContent = text;
   return e;
+}
+
+// Titles and English prose in the guides often carry the exact Chinese item
+// they are explaining ("Identity sentences with 是", for example). Rendering
+// those strings as plain text made the most useful part of the title the one
+// thing that would not highlight under the pointer.
+function hoverText(tag, className, text) {
+  return HAS_CHINESE.test(String(text || ''))
+    ? lookup.hoverable(tag, className, text)
+    : el(tag, className, text);
 }
 
 function speakButton(text, title) {
@@ -153,6 +178,46 @@ function renderHead(g) {
     statBlock(g.stats.studyHours, 'typical study time'),
   );
   guideEl.append(stats);
+
+  const levelKey = hskLevelKey(g.level);
+  const levelCount = HSK_LEVEL_COUNTS[levelKey];
+  const totalCount = cumulativeHskCount(g.level);
+  const sets = el('div', 'set-actions');
+  sets.append(el('strong', null, 'Practice this vocabulary as flashcards'));
+  const buttons = el('div', 'set-buttons');
+
+  function practice(label, scope, primary = false) {
+    const link = el('a', `practice${primary ? ' primary' : ''}`, label);
+    link.href = hskPracticeHref(g.level, scope);
+    if (embedded) {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        parent.postMessage({
+          type: 'zx-open',
+          view: 'review',
+          url: hskPracticeHref(g.level, scope, { embedded: true }),
+        }, '*');
+      });
+    }
+    return link;
+  }
+
+  const levelLabel = levelKey === '7-9'
+    ? `Practice ${levelCount.toLocaleString()} shared HSK 7–9 words`
+    : g.level === 1
+      ? `Practice all ${levelCount.toLocaleString()} HSK 1 words`
+      : `Practice ${levelCount.toLocaleString()} new HSK ${g.level} words`;
+  buttons.append(practice(levelLabel, 'level', true));
+  if (totalCount !== levelCount) {
+    const through = levelKey === '7-9' ? 'HSK 1–9' : `HSK 1–${g.level}`;
+    buttons.append(practice(
+      `Practice all ${totalCount.toLocaleString()} through ${through}`,
+      'cumulative',
+    ));
+  }
+  sets.append(buttons, el('p', 'set-note',
+    'HSK sets stay out of your saved library unless you add a word there. The word keeps one review schedule wherever it appears.'));
+  guideEl.append(sets);
 }
 
 function renderGrammar(g) {
@@ -160,10 +225,10 @@ function renderGrammar(g) {
   for (const point of g.grammar) {
     const box = el('div', 'point');
     const head = el('div', 'point-head');
-    head.append(el('span', 'point-name', point.point));
+    head.append(hoverText('span', 'point-name', point.point));
     head.append(lookup.hoverable('span', 'formula', point.formula));
     box.append(head);
-    box.append(el('p', 'explain', point.explain));
+    box.append(hoverText('p', 'explain', point.explain));
     for (const ex of point.examples) {
       const eg = el('div', 'eg zwe-savable');
       const zh = lookup.hoverable('div', 'zh', ex.zh);
@@ -186,7 +251,7 @@ function renderGrammar(g) {
 function renderVocab(g) {
   const s = section('Core vocabulary');
   for (const group of g.vocab) {
-    s.append(el('div', 'theme-name', group.theme));
+    s.append(hoverText('div', 'theme-name', group.theme));
     const words = el('div', 'words');
     for (const w of group.words) {
       const box = el('div', 'word zwe-savable');
@@ -200,6 +265,162 @@ function renderVocab(g) {
     }
     s.append(words);
   }
+  guideEl.append(s);
+}
+
+function renderFullVocabulary(g) {
+  const s = section('Complete vocabulary list');
+  const box = el('div', 'full-vocab');
+  if (hskVocabularyError) {
+    box.append(el('p', 'vocab-empty',
+      'The complete vocabulary list could not be loaded. Reload the extension and try again.'));
+    s.append(box);
+    guideEl.append(s);
+    return;
+  }
+
+  const key = hskLevelKey(g.level);
+  const levelCount = HSK_LEVEL_COUNTS[key];
+  const totalCount = cumulativeHskCount(g.level);
+  const shared = key === '7-9';
+  box.append(el('p', 'vocab-intro', shared
+    ? 'The standard publishes one shared vocabulary band for HSK 7–9, not separate level 7, 8, and 9 word lists. Search it here or switch to the complete cumulative list.'
+    : `This is the full 2021-standard list: ${levelCount.toLocaleString()} words introduced at HSK ${g.level}. Switch to cumulative to include every earlier level too.`));
+
+  const tools = el('div', 'vocab-tools');
+  const tabs = el('div', 'vocab-tabs');
+  const levelTab = el('button', null, shared
+    ? `Shared HSK 7–9 · ${levelCount.toLocaleString()}`
+    : `New at HSK ${g.level} · ${levelCount.toLocaleString()}`);
+  levelTab.type = 'button';
+  levelTab.setAttribute('aria-pressed', 'false');
+  tabs.append(levelTab);
+
+  let cumulativeTab = null;
+  if (totalCount !== levelCount) {
+    cumulativeTab = el('button', null,
+      `Cumulative · ${totalCount.toLocaleString()}`);
+    cumulativeTab.type = 'button';
+    cumulativeTab.setAttribute('aria-pressed', 'false');
+    tabs.append(cumulativeTab);
+  } else {
+    vocabScope = 'level';
+  }
+
+  const search = el('input', 'vocab-search');
+  search.type = 'search';
+  search.placeholder = 'Search hanzi, pinyin, part of speech, or definition';
+  search.setAttribute('aria-label', `Search HSK ${g.level} vocabulary`);
+  search.value = vocabQuery;
+  tools.append(tabs, search);
+
+  const meta = el('p', 'vocab-meta');
+  meta.setAttribute('aria-live', 'polite');
+  const scroll = el('div', 'vocab-scroll');
+  const pages = el('div', 'vocab-pages');
+  box.append(tools, meta, scroll, pages);
+
+  function renderRows() {
+    const source = vocabularyForLevel(hskVocabulary, g.level, vocabScope);
+    const needle = vocabQuery.trim().toLocaleLowerCase();
+    const filtered = needle
+      ? source.filter((word) => searchableHskText(word).includes(needle))
+      : source;
+    const pageCount = Math.max(1, Math.ceil(filtered.length / VOCAB_PAGE_SIZE));
+    vocabPage = Math.min(vocabPage, pageCount - 1);
+    const start = vocabPage * VOCAB_PAGE_SIZE;
+    const shown = filtered.slice(start, start + VOCAB_PAGE_SIZE);
+
+    levelTab.classList.toggle('active', vocabScope === 'level');
+    levelTab.setAttribute('aria-pressed', String(vocabScope === 'level'));
+    if (cumulativeTab) {
+      cumulativeTab.classList.toggle('active', vocabScope === 'cumulative');
+      cumulativeTab.setAttribute('aria-pressed', String(vocabScope === 'cumulative'));
+    }
+
+    if (!filtered.length) {
+      meta.textContent = `No matches in ${source.length.toLocaleString()} vocabulary items`;
+      scroll.replaceChildren(el('div', 'vocab-empty', `No HSK words match “${vocabQuery}”.`));
+      pages.replaceChildren();
+      return;
+    }
+    meta.textContent = `Showing ${(start + 1).toLocaleString()}–${(start + shown.length).toLocaleString()} of ${filtered.length.toLocaleString()}${needle ? ` matches (${source.length.toLocaleString()} in this set)` : ''}`;
+
+    const table = el('table', 'vocab-table');
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    for (const label of ['No.', 'Word', 'Pinyin', 'Type', 'Definition']) {
+      hr.append(el('th', null, label));
+    }
+    thead.append(hr);
+    const tbody = document.createElement('tbody');
+    for (const word of shown) {
+      const tr = document.createElement('tr');
+      tr.append(el('td', 'vocab-no', word.id.slice(1).replace('-', ' · ')));
+
+      const wordCell = document.createElement('td');
+      const face = forms(word, hanziPref);
+      const head = el('div', 'vocab-head');
+      head.append(lookup.hoverable('span', 'vocab-hanzi', face.primary));
+      if (face.secondary) head.append(lookup.hoverable('span', 'vocab-alt', face.secondary));
+      head.append(speakButton(face.primary, `Play ${face.primary}`));
+      wordCell.append(head);
+      const notation = isTradFirst(hanziPref) ? word.notationTrad : word.notationSimp;
+      if (notation && notation !== face.primary && notation !== face.secondary) {
+        const listed = hoverText('span', 'vocab-listed',
+          `listed as ${notation.replaceAll('|', ' / ')}`);
+        wordCell.append(listed);
+      }
+      tr.append(wordCell);
+      tr.append(el('td', 'vocab-py', word.pinyin));
+      tr.append(el('td', 'vocab-pos', word.pos || '—'));
+      tr.append(hoverText('td', 'vocab-def', word.defs));
+      tbody.append(tr);
+    }
+    table.append(thead, tbody);
+    scroll.replaceChildren(table);
+
+    pages.replaceChildren();
+    if (pageCount > 1) {
+      const previous = el('button', null, '← Previous');
+      previous.type = 'button';
+      previous.disabled = vocabPage === 0;
+      previous.addEventListener('click', () => {
+        vocabPage--;
+        renderRows();
+        box.scrollIntoView({ block: 'start' });
+      });
+      const status = el('span', null, `Page ${vocabPage + 1} of ${pageCount}`);
+      const next = el('button', null, 'Next →');
+      next.type = 'button';
+      next.disabled = vocabPage === pageCount - 1;
+      next.addEventListener('click', () => {
+        vocabPage++;
+        renderRows();
+        box.scrollIntoView({ block: 'start' });
+      });
+      pages.append(previous, status, next);
+    }
+  }
+
+  levelTab.addEventListener('click', () => {
+    vocabScope = 'level';
+    vocabPage = 0;
+    renderRows();
+  });
+  cumulativeTab?.addEventListener('click', () => {
+    vocabScope = 'cumulative';
+    vocabPage = 0;
+    renderRows();
+  });
+  search.addEventListener('input', () => {
+    vocabQuery = search.value;
+    vocabPage = 0;
+    renderRows();
+  });
+
+  renderRows();
+  s.append(box);
   guideEl.append(s);
 }
 
@@ -254,7 +475,7 @@ function renderPassage(g) {
 function renderList(title, items) {
   const s = section(title);
   const ul = el('ul', 'plain');
-  for (const item of items) ul.append(el('li', null, item));
+  for (const item of items) ul.append(hoverText('li', null, item));
   s.append(ul);
   guideEl.append(s);
 }
@@ -263,7 +484,7 @@ function renderPitfalls(g) {
   const s = section('Common mistakes');
   for (const p of g.pitfalls) {
     const box = el('div', 'pitfall');
-    box.append(el('b', null, p.title), el('p', null, p.detail));
+    box.append(hoverText('b', null, p.title), hoverText('p', null, p.detail));
     s.append(box);
   }
   guideEl.append(s);
@@ -272,7 +493,7 @@ function renderPitfalls(g) {
 function renderExam(g) {
   const s = section('The exam');
   const box = el('div', 'exam');
-  box.append(el('p', null, g.exam.format), el('p', null, g.exam.tips));
+  box.append(hoverText('p', null, g.exam.format), hoverText('p', null, g.exam.tips));
   s.append(box);
   guideEl.append(s);
 }
@@ -287,11 +508,12 @@ function renderGuideBody() {
   guideEl.replaceChildren();
   renderHead(g);
   const overview = section('Overview');
-  overview.append(el('p', 'overview', g.overview));
+  overview.append(hoverText('p', 'overview', g.overview));
   guideEl.append(overview);
   renderList('What you can do at this level', g.canDo);
   renderGrammar(g);
   renderVocab(g);
+  renderFullVocabulary(g);
   renderPassage(g);
   renderPitfalls(g);
   renderList('How to study this level', g.tips);
@@ -306,17 +528,28 @@ async function selectLevel(level) {
   currentLevel = level;
   showPassagePinyin = false;
   showPassageEnglish = false;
+  vocabScope = 'level';
+  vocabQuery = '';
+  vocabPage = 0;
   renderRail(level);
   guideEl.replaceChildren(el('p', 'empty', 'Loading…'));
   // Guides are written in simplified. Convert the whole object up front rather
   // than at each place it prints a character: once the text is in per-character
   // spans there is no word left to segment, and 发 becomes a guess.
+  const vocabularyPromise = loadHskVocabulary()
+    .then((words) => ({ words, error: '' }))
+    .catch((error) => ({ words: [], error: String(error?.message || error) }));
   const next = await convertDeep(source, hanziPref);
   if (seq !== renderSeq) return;
   guide = next;
-  const map = await loadReadings(chineseStrings(next));
+  const [map, vocabulary] = await Promise.all([
+    loadReadings(chineseStrings(next)),
+    vocabularyPromise,
+  ]);
   if (seq !== renderSeq) return; // the learner switched level while we waited
   readings = map;
+  hskVocabulary = vocabulary.words;
+  hskVocabularyError = vocabulary.error;
   renderGuideBody();
   guideEl.scrollTop = 0;
   await chrome.storage.local.set({ hskLevel: level });
@@ -375,7 +608,10 @@ const tutor = createTutor({
 async function init() {
   hanziPref = await getHanziPref();
   const { hskLevel } = await chrome.storage.local.get('hskLevel');
-  const level = HSK_GUIDES.some((g) => g.level === hskLevel) ? hskLevel : 1;
+  const requestedLevel = Number(location.hash.slice(1));
+  const level = HSK_GUIDES.some((g) => g.level === requestedLevel)
+    ? requestedLevel
+    : HSK_GUIDES.some((g) => g.level === hskLevel) ? hskLevel : 1;
   await selectLevel(level);
 }
 
