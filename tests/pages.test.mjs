@@ -220,4 +220,22 @@ test('every run of hanzi a page prints is hoverable', () => {
   }
 });
 
+// Both composers take Shift+Enter for a new line, and both used to print what
+// you wrote into a box with the browser's default white-space handling, which
+// throws every break away. What you typed and what the log shows have to match:
+// a question written as three lines is three lines when you read it back.
+test('line breaks typed into a composer survive into the log', () => {
+  const tutor = read('lib/tutor.js');
+  assert.match(tutor, /\.tutor \.msg\.user \.bubble \.text \{[^}]*white-space: pre-wrap/,
+    'lib/tutor.js: the question bubble collapses the line breaks you typed');
+  assert.match(tutor, /bubble\.append\(el\('div', 'text', msg\.content\)\)/,
+    'lib/tutor.js: the question text no longer carries the class that keeps its breaks');
+
+  const placement = read('placement.html');
+  assert.match(placement, /\.msg\.learner \.bubble \{[^}]*white-space: pre-wrap/,
+    'placement.html: the answer bubble collapses the line breaks you typed');
+  assert.ok(read('placement.js').includes('Shift+Enter for a new line'),
+    'placement.js no longer offers Shift+Enter — update this test');
+});
+
 console.log(`pages.test.mjs: ${passed} tests passed`);

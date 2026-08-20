@@ -58,8 +58,12 @@
     .msg .bubble { display: inline-block; max-width: 88%; text-align: left;
       padding: 11px 14px; border-radius: 14px 14px 14px 4px;
       border: 1px solid #e8e1d5; background: #fffdf7; }
+    /* The composer says "Shift+Enter for a new line", so an answer written on
+       several lines is read back on several lines. Collapsing them turned a
+       numbered answer into one long sentence. */
     .msg.learner .bubble { border-radius: 14px 14px 4px 14px;
-      border-color: #ded6c2; background: #ece4d0; font-size: 15px; line-height: 1.55; }
+      border-color: #ded6c2; background: #ece4d0; font-size: 15px; line-height: 1.55;
+      white-space: pre-wrap; overflow-wrap: break-word; }
     .msg .zh { font-size: 19px; line-height: 1.75;
       font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
     .thinking { color: #999; font-size: 14px; font-style: italic; }

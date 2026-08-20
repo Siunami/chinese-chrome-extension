@@ -177,6 +177,12 @@ const TUTOR_CSS = `
   }
   .tutor .msg.bot .bubble p { margin: 0 0 7px; }
   .tutor .msg.bot .bubble p:last-child { margin-bottom: 0; }
+  /* Shift+Enter puts a line break in the box you type in, so the question in
+     the log keeps it. Without this the browser collapses every break and the
+     three-line question you wrote comes back as one paragraph — a list of
+     characters you asked about, run together. A long unbroken run (a pasted
+     URL) still breaks rather than pushing the bubble past its own edge. */
+  .tutor .msg.user .bubble .text { white-space: pre-wrap; overflow-wrap: break-word; }
   .tutor .msg .quoted {
     margin-bottom: 5px; padding: 4px 8px; border-left: 2px solid #c9a55c;
     border-radius: 0 5px 5px 0; background: rgba(201, 165, 92, 0.13);
@@ -861,7 +867,7 @@ export function createTutor(options) {
         wrap.append(shelf);
       }
       if (msg.quote) bubble.append(el('div', 'quoted', msg.quote));
-      bubble.append(el('div', null, msg.content));
+      bubble.append(el('div', 'text', msg.content));
       wrap.append(bubble);
     } else if (msg.role === 'error') {
       wrap.append(el('div', 'bubble', msg.content));
